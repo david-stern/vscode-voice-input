@@ -2,7 +2,7 @@
   "name": "voice-input",
   "displayName": "Voice Input (Soniox STT)",
   "description": "Push-to-talk voice-to-text for any chat or editor input. Powered by Soniox.",
-  "version": "1.0.2",
+  "version": "1.0.3",
   "publisher": "david-stern",
   "author": {
     "name": "David Stern"

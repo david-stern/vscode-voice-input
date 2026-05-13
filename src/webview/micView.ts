@@ -350,6 +350,7 @@ const CSS = `
     gap: 4px;
     font-size: 11px;
     opacity: 0.95;
+    min-width: 0;
   }
   .settings-grid label.full { grid-column: 1 / -1; }
   .settings-grid select,
@@ -360,6 +361,9 @@ const CSS = `
     border-radius: 4px;
     padding: 4px 6px;
     font: inherit;
+    width: 100%;
+    min-width: 0;
+    max-width: 100%;
   }
   .btn {
     background: var(--accent);
