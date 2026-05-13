@@ -332,6 +332,32 @@ window.addEventListener('message', (e) => {
   }
 });
 
+// Track whether Alt+M was pressed so we can fire the toggle only on keyup.
+let altMHeld = false;
+
+document.addEventListener('keydown', (e: KeyboardEvent) => {
+  if (e.altKey && e.code === 'KeyM' && !e.repeat) {
+    e.preventDefault();
+    altMHeld = true;
+  }
+});
+
+document.addEventListener('keyup', (e: KeyboardEvent) => {
+  // Alt released before M — cancel without firing.
+  if (e.key === 'Alt' && altMHeld) {
+    altMHeld = false;
+    return;
+  }
+  if (e.code === 'KeyM' && altMHeld) {
+    altMHeld = false;
+    if (state.recording) {
+      vscode.postMessage({ type: 'stop' });
+    } else {
+      vscode.postMessage({ type: 'start' });
+    }
+  }
+});
+
 document.addEventListener('DOMContentLoaded', () => {
   render();
   vscode.postMessage({ type: 'ready' });
