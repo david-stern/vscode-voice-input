@@ -2,7 +2,7 @@
   "name": "voice-input",
   "displayName": "Voice Input (Soniox STT)",
   "description": "Push-to-talk voice-to-text for any chat or editor input. Powered by Soniox.",
-  "version": "1.0.4",
+  "version": "1.0.5",
   "publisher": "david-stern",
   "author": {
     "name": "David Stern"
@@ -42,7 +42,8 @@
         {
           "type": "webview",
           "id": "voiceInput.micView",
-          "name": "Microphone"
+          "name": "Microphone",
+          "icon": "$(mic)"
         }
       ]
     },
@@ -87,7 +88,10 @@
         "voiceInput.uiLanguage": {
           "type": "string",
           "default": "en",
-          "enum": ["he", "en"],
+          "enum": [
+            "he",
+            "en"
+          ],
           "description": "Sidebar UI language."
         },
         "voiceInput.audioDevice": {
@@ -98,7 +102,12 @@
         "voiceInput.historyTtlDays": {
           "type": "number",
           "default": 30,
-          "enum": [0, 1, 7, 30],
+          "enum": [
+            0,
+            1,
+            7,
+            30
+          ],
           "description": "Days to keep transcription history. 0 = forever."
         },
         "voiceInput.sttModel": {
@@ -109,7 +118,13 @@
         "voiceInput.injectionMode": {
           "type": "string",
           "default": "auto",
-          "enum": ["auto", "paste-key", "type-key", "editor-only", "clipboard-only"],
+          "enum": [
+            "auto",
+            "paste-key",
+            "type-key",
+            "editor-only",
+            "clipboard-only"
+          ],
           "description": "auto: text-tab → editor cursor; else clipboard + Ctrl+V via ydotool. paste-key: always clipboard+Ctrl+V (best for Unicode/Hebrew). type-key: type chars via ydotool (US-layout only). editor-only / clipboard-only as named."
         }
       }
@@ -125,7 +140,10 @@
   "devDependencies": {
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.90.0",
+    "@typescript-eslint/eslint-plugin": "^8.59.3",
+    "@typescript-eslint/parser": "^8.59.3",
     "esbuild": "^0.20.0",
+    "eslint": "^10.3.0",
     "typescript": "^5.4.0"
   }
 }
