@@ -23,9 +23,11 @@ Hebrew is the default language. The full UI is bilingual (he / en) with native R
 
 | Action | Default binding | Customize |
 |---|---|---|
-| Toggle recording | `Alt+M` (Linux/Win/Mac) | Sidebar → Settings → **Recording shortcut → Change…** (opens the VSCode Keyboard Shortcuts editor pre-filtered for `voiceInput.toggleRecording`) |
+| Toggle recording | `Alt+M` (Linux/Win) · `Ctrl+Alt+M` (macOS) | Sidebar → Settings → **Recording shortcut → Change…** (opens the VSCode Keyboard Shortcuts editor pre-filtered for `voiceInput.toggleRecording`) |
 
-The shortcut works **from any focus** — editor, chat input, terminal — and never moves your view. The transcription lands at the cursor (editor) or is pasted via simulated `Ctrl+V` (chat / other inputs).
+The shortcut works **from any focus** — editor, chat input, terminal, and the Voice Input sidebar panel — and never moves your view. The transcription lands at the cursor (editor) or is pasted via simulated `Ctrl+V` (chat / other inputs).
+
+**Trigger on key-up.** When `Alt+M` is pressed while the Voice Input sidebar panel has focus, the toggle fires on **key release** (not keydown). This prevents accidental double-triggers from key-repeat and matches the push-to-talk feel of the mic button.
 
 To change a binding by hand: `Ctrl+K Ctrl+S` → search `voiceInput.toggleRecording` → click the pencil → press your new combo.
 
@@ -127,8 +129,8 @@ Configurable from both the in-panel **Settings** section (collapsible) and `sett
 | Key | Values | Default |
 |---|---|---|
 | `voiceInput.languageHint` | `he`, `en`, `auto` | `he` |
-| `voiceInput.uiLanguage` | `he`, `en` | `he` |
-| `voiceInput.historyTtlDays` | `0` (forever), `1`, `7`, `30` | `7` |
+| `voiceInput.uiLanguage` | `he`, `en` | `en` |
+| `voiceInput.historyTtlDays` | `0` (forever), `1`, `7`, `30` | `30` |
 | `voiceInput.sttModel` | Soniox model id | `stt-async-v4` |
 | `voiceInput.injectionMode` | `auto`, `paste-key`, `type-key`, `editor-only`, `clipboard-only` | `auto` |
 
@@ -167,6 +169,21 @@ VSCode webviews (used by Claude Code chat, etc.) are sandboxed and reject `getUs
 | Random ASCII / `?` characters appear in chat instead of text | VSCode is running an old build of the extension | `Developer: Reload Window`; verify version with `Voice Input: Show Diagnostics` |
 | Hebrew comes back as gibberish from Soniox | Wrong language hint | Set **Speech language** to `he` in the panel |
 | Recording stops immediately | Default mic is a monitor source | `pactl get-default-source` — set a real input device |
+
+---
+
+## Changelog
+
+### v1.0.2
+- **Fix:** `Alt+M` now works when the Voice Input sidebar panel has keyboard focus. Previously the keydown event was silently swallowed by the webview browser context with no handler, so the shortcut had no effect. A `keydown`/`keyup` listener pair is now registered in the webview — keydown suppresses the default action, keyup fires the toggle.
+- **Behaviour:** When triggered from within the webview, the toggle fires on **key release** (`keyup`) rather than keydown, avoiding repeated triggers from key-repeat.
+
+### v1.0.1
+- Initial public release.
+- Push-to-talk recording via `Alt+M` (editor / terminal focus only).
+- Sidebar panel with transcription history, settings, and API key management.
+- Linux Wayland / X11 / macOS / Windows support.
+- Soniox STT backend with model and language selection.
 
 ---
 
