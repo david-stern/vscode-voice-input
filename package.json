@@ -2,10 +2,14 @@
   "name": "voice-input",
   "displayName": "Voice Input (Soniox STT)",
   "description": "Push-to-talk voice-to-text for any chat or editor input. Powered by Soniox.",
-  "version": "0.3.6",
+  "version": "1.0.1",
   "publisher": "david-stern",
   "author": {
     "name": "David Stern"
+  },
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/david-stern/vscode-voice-input.git"
   },
   "engines": {
     "vscode": "^1.90.0"
