@@ -9,7 +9,8 @@
     "strict": true,
     "esModuleInterop": true,
     "skipLibCheck": true,
-    "resolveJsonModule": true
+    "resolveJsonModule": true,
+    "types": ["node", "vscode"]
   },
   "include": ["src/**/*"],
   "exclude": ["node_modules", "out", "src/webview/mic.client.ts"]
