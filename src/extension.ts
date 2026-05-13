@@ -1,4 +1,6 @@
 import * as vscode from 'vscode';
+import * as path from 'path';
+import { spawn } from 'child_process';
 import { MicViewProvider, ViewState, WebviewMessage } from './webview/micView';
 import { transcribe } from './stt/soniox';
 import { injectText, InjectionMode } from './inject';
@@ -142,11 +144,10 @@ export async function activate(context: vscode.ExtensionContext) {
   };
 
   const tool = await pickTool();
-  if (!tool) {
-    vscode.window.showErrorMessage(
-      'Voice Input: no audio recorder found. Install ffmpeg / parecord / arecord.',
-    );
-  }
+
+  // Check all required dependencies and prompt to install if anything is missing.
+  // Run in background — don't block activation.
+  void checkDependencies(context);
 
   async function pushFullState() {
     const s = readSettings();
@@ -403,4 +404,104 @@ function prettifyKey(raw: string): string {
     .split('+')
     .map((p) => p.charAt(0).toUpperCase() + p.slice(1))
     .join('+');
+}
+
+// ── Dependency checker ───────────────────────────────────────────────────────
+
+/**
+ * Per-platform required tools. Keys are bin names; values are human labels
+ * shown in the notification. Only bins that are NOT expected to ship
+ * pre-installed on that platform are listed (e.g. osascript/pbcopy are
+ * omitted on macOS because they are always present).
+ */
+function requiredBins(): string[] {
+  if (process.platform === 'darwin') {
+    return ['ffmpeg'];
+  }
+  if (process.platform === 'win32') {
+    return ['ffmpeg'];
+  }
+  // Linux — check audio recorder + the right paste-key tool for the session.
+  const isWayland =
+    Boolean(process.env.WAYLAND_DISPLAY) ||
+    process.env.XDG_SESSION_TYPE === 'wayland';
+  if (isWayland) {
+    return ['ffmpeg', 'ydotool', 'wl-copy'];
+  }
+  return ['ffmpeg', 'xdotool'];
+}
+
+function binExists(bin: string): Promise<boolean> {
+  const cmd = process.platform === 'win32' ? 'where' : 'which';
+  return new Promise((resolve) => {
+    const p = spawn(cmd, [bin], { stdio: 'ignore' });
+    p.on('exit', (code) => resolve(code === 0));
+    p.on('error', () => resolve(false));
+  });
+}
+
+/** Returns the absolute path to the platform install script. */
+function installScriptPath(extensionPath: string): string | null {
+  if (process.platform === 'darwin') {
+    return path.join(extensionPath, 'scripts', 'install-mac.sh');
+  }
+  if (process.platform === 'win32') {
+    return path.join(extensionPath, 'scripts', 'install-windows.ps1');
+  }
+  if (process.platform === 'linux') {
+    return path.join(extensionPath, 'scripts', 'install-linux.sh');
+  }
+  return null;
+}
+
+/**
+ * Check for missing tools and, if any are absent, show a one-time
+ * notification offering to open a terminal that runs the install script.
+ * Uses globalState to avoid re-prompting after the user dismisses.
+ */
+async function checkDependencies(context: vscode.ExtensionContext): Promise<void> {
+  const SKIP_KEY = 'depsPromptDismissed';
+  if (context.globalState.get<boolean>(SKIP_KEY)) return;
+
+  const bins = requiredBins();
+  const checks = await Promise.all(bins.map(async (b) => ({ bin: b, ok: await binExists(b) })));
+  const missing = checks.filter((c) => !c.ok).map((c) => c.bin);
+
+  if (missing.length === 0) return;
+
+  log('checkDependencies: missing tools:', missing.join(', '));
+
+  const scriptPath = installScriptPath(context.extensionPath);
+
+  const action = scriptPath ? 'Install now' : undefined;
+  const sel = await vscode.window.showWarningMessage(
+    `Voice Input: missing required tool${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}.`,
+    ...(action ? [action] : []),
+    'Dismiss',
+  );
+
+  if (sel === 'Dismiss' || sel === undefined) {
+    // Don't prompt again this install.
+    await context.globalState.update(SKIP_KEY, true);
+    return;
+  }
+
+  if (sel === 'Install now' && scriptPath) {
+    openInstallTerminal(scriptPath);
+  }
+}
+
+/** Open a new terminal and run the install script for the current platform. */
+function openInstallTerminal(scriptPath: string): void {
+  const term = vscode.window.createTerminal({ name: 'Voice Input Setup' });
+  term.show(true /* preserveFocus */);
+
+  if (process.platform === 'win32') {
+    // Escape spaces in path for PowerShell.
+    const escaped = scriptPath.replace(/ /g, '` ');
+    term.sendText(`powershell -ExecutionPolicy Bypass -File "${escaped}"`);
+  } else {
+    // Make the script executable then run it.
+    term.sendText(`bash "${scriptPath}"`);
+  }
 }
