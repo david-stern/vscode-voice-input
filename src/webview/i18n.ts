@@ -35,6 +35,7 @@ export interface Strings {
   settingsKey: string;
   changeKey: string;
   refresh: string;
+  toToggle: string;
 }
 
 export const STRINGS: Record<UiLang, Strings> = {
@@ -45,7 +46,8 @@ export const STRINGS: Record<UiLang, Strings> = {
     encoding: 'מקודד...',
     transcribing: 'מתמלל...',
     holdHint: 'לחץ והחזק כדי להקליט',
-    pressKeyHint: 'או הקש Alt+M לטוגל',
+    pressKeyHint: 'או הקש',
+    toToggle: 'לטוגל',
     history: 'היסטוריית דיבור',
     noHistory: 'אין הקלטות עדיין',
     copy: 'העתק',
@@ -81,7 +83,8 @@ export const STRINGS: Record<UiLang, Strings> = {
     encoding: 'Encoding...',
     transcribing: 'Transcribing...',
     holdHint: 'Hold to record',
-    pressKeyHint: 'or press Alt+M to toggle',
+    pressKeyHint: 'or press',
+    toToggle: 'to toggle',
     history: 'History',
     noHistory: 'No recordings yet',
     copy: 'Copy',

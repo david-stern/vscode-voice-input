@@ -208,6 +208,17 @@ const CSS = `
     text-align: center;
     line-height: 1.5;
   }
+  .hint-key {
+    background: var(--bg-soft);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    padding: 2px 6px;
+    font-size: 10px;
+    font-weight: 600;
+    font-family: 'Monaco', 'Menlo', 'Ubuntu Mono', monospace;
+    display: inline-block;
+    opacity: 0.9;
+  }
 
   /* SECTIONS */
   .section {

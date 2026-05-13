@@ -94,7 +94,7 @@ function render() {
         <span class="status-dot ${state.recording ? 'on' : ''}"></span>
         <span id="status-text">${state.recording ? escapeHtml(t().recording) : escapeHtml(t().idle)}</span>
       </div>
-      <div class="hint">${escapeHtml(t().holdHint)} · ${escapeHtml(t().pressKeyHint)}</div>
+      <div class="hint">${escapeHtml(t().holdHint)} · ${escapeHtml(t().pressKeyHint)} <code class="hint-key">${escapeHtml(state.keybinding)}</code> ${escapeHtml(t().toToggle)}</div>
     </div>
 
     <div class="section">

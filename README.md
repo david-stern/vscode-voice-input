@@ -8,7 +8,7 @@ Hebrew is the default language. The full UI is bilingual (he / en) with native R
 
 ## Features
 
-- **Background recording.** `Alt+M` toggles recording from anywhere — no view focus stolen, no popups.
+- **Background recording.** Toggles recording from anywhere (default: `Alt+M` on Linux/Win, `Ctrl+Alt+M` on macOS) — customizable in sidebar, shows your configured shortcut dynamically.
 - **Universal injection.** Editor → cursor insertion. Chat webviews / panels → clipboard + `Ctrl+V` simulated via `ydotool`. Works around VSCode's webview microphone block.
 - **Speech history.** Every transcription is saved with timestamp + language. One-click copy or delete per entry. Configurable TTL (1 day / 7 days / 30 days / forever).
 - **In-panel settings.** Speech language, UI language, history TTL, Soniox model, recording shortcut, API key — all editable from the sidebar without leaving the editor.
@@ -27,7 +27,7 @@ Hebrew is the default language. The full UI is bilingual (he / en) with native R
 
 The shortcut works **from any focus** — editor, chat input, terminal, and the Voice Input sidebar panel — and never moves your view. The transcription lands at the cursor (editor) or is pasted via simulated `Ctrl+V` (chat / other inputs).
 
-**Trigger on key-up.** When `Alt+M` is pressed while the Voice Input sidebar panel has focus, the toggle fires on **key release** (not keydown). This prevents accidental double-triggers from key-repeat and matches the push-to-talk feel of the mic button.
+**Trigger on key-up.** When the recording shortcut is pressed while the Voice Input sidebar panel has focus, the toggle fires on **key release** (not keydown). This prevents accidental double-triggers from key-repeat and matches the push-to-talk feel of the mic button. Your currently configured shortcut is displayed in the sidebar.
 
 To change a binding by hand: `Ctrl+K Ctrl+S` → search `voiceInput.toggleRecording` → click the pencil → press your new combo.
 
