@@ -1,0 +1,127 @@
+{
+  "name": "voice-input",
+  "displayName": "Voice Input (Soniox STT)",
+  "description": "Push-to-talk voice-to-text for any chat or editor input. Powered by Soniox.",
+  "version": "0.3.5",
+  "publisher": "david-stern",
+  "author": {
+    "name": "David Stern"
+  },
+  "engines": {
+    "vscode": "^1.90.0"
+  },
+  "os": [
+    "darwin",
+    "linux",
+    "win32"
+  ],
+  "categories": [
+    "Other"
+  ],
+  "main": "./out/extension.js",
+  "icon": "media/logo.png",
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "contributes": {
+    "viewsContainers": {
+      "activitybar": [
+        {
+          "id": "voiceInput",
+          "title": "Voice Input",
+          "icon": "media/icon-activitybar.svg"
+        }
+      ]
+    },
+    "views": {
+      "voiceInput": [
+        {
+          "type": "webview",
+          "id": "voiceInput.micView",
+          "name": "Microphone"
+        }
+      ]
+    },
+    "commands": [
+      {
+        "command": "voiceInput.toggleRecording",
+        "title": "Voice Input: Toggle Recording",
+        "icon": "$(mic)"
+      },
+      {
+        "command": "voiceInput.setApiKey",
+        "title": "Voice Input: Set Soniox API Key"
+      },
+      {
+        "command": "voiceInput.clearApiKey",
+        "title": "Voice Input: Clear Soniox API Key"
+      },
+      {
+        "command": "voiceInput.clearHistory",
+        "title": "Voice Input: Clear History"
+      },
+      {
+        "command": "voiceInput.showDiagnostics",
+        "title": "Voice Input: Show Diagnostics"
+      }
+    ],
+    "keybindings": [
+      {
+        "command": "voiceInput.toggleRecording",
+        "key": "alt+m",
+        "mac": "ctrl+alt+m"
+      }
+    ],
+    "configuration": {
+      "title": "Voice Input",
+      "properties": {
+        "voiceInput.languageHint": {
+          "type": "string",
+          "default": "he",
+          "description": "Soniox language hint (ISO code, e.g. he, en, ar, fa). 'auto' disables language_hints. Full list visible in the sidebar dropdown."
+        },
+        "voiceInput.uiLanguage": {
+          "type": "string",
+          "default": "en",
+          "enum": ["he", "en"],
+          "description": "Sidebar UI language."
+        },
+        "voiceInput.audioDevice": {
+          "type": "string",
+          "default": "",
+          "description": "Optional audio device name override. Windows: dshow audio device name (e.g. 'Microphone (Realtek)'). macOS: avfoundation index (e.g. ':1'). Linux: PulseAudio source name. Empty = system default."
+        },
+        "voiceInput.historyTtlDays": {
+          "type": "number",
+          "default": 30,
+          "enum": [0, 1, 7, 30],
+          "description": "Days to keep transcription history. 0 = forever."
+        },
+        "voiceInput.sttModel": {
+          "type": "string",
+          "default": "stt-async-v4",
+          "description": "Soniox STT model identifier."
+        },
+        "voiceInput.injectionMode": {
+          "type": "string",
+          "default": "auto",
+          "enum": ["auto", "paste-key", "type-key", "editor-only", "clipboard-only"],
+          "description": "auto: text-tab → editor cursor; else clipboard + Ctrl+V via ydotool. paste-key: always clipboard+Ctrl+V (best for Unicode/Hebrew). type-key: type chars via ydotool (US-layout only). editor-only / clipboard-only as named."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "vscode:prepublish": "npm run build",
+    "build": "node esbuild.js",
+    "watch": "node esbuild.js --watch",
+    "compile": "tsc -p ./",
+    "lint": "eslint src --ext ts"
+  },
+  "devDependencies": {
+    "@types/node": "^20.0.0",
+    "@types/vscode": "^1.90.0",
+    "esbuild": "^0.20.0",
+    "typescript": "^5.4.0"
+  }
+}
