@@ -63,7 +63,7 @@ brew install ffmpeg
 
 That's it. `osascript` and `pbcopy` come with macOS. After installing the extension, grant **VSCode** microphone access in **System Settings → Privacy & Security → Microphone** (the OS will prompt on first recording).
 
-The recording shortcut is the same on macOS — `Alt+M` (`Option+M`). Paste uses `Cmd+V` automatically.
+The recording shortcut on macOS is `Ctrl+Alt+M` (`Ctrl+Option+M`). Paste uses `Cmd+V` automatically.
 
 ### One-time setup on Linux Wayland (Ubuntu / Debian)
 
@@ -116,8 +116,8 @@ ffmpeg -hide_banner -list_devices true -f dshow -i dummy
 3. Open the **Voice Input** view in the activity bar (purple mic icon).
 4. Click **Set Soniox API key** in the Settings section and paste your key.
 5. Click into any chat input or editor.
-6. Press **`Alt+M`** to start recording — the status bar turns red.
-7. Press **`Alt+M`** again — the transcript is pasted at the cursor and saved to history.
+6. Press **`Alt+M`** (Linux/Win) or **`Ctrl+Alt+M`** (macOS) to start recording — the status bar turns red.
+7. Press the shortcut again — the transcript is pasted at the cursor and saved to history.
 8. The Voice Input view shows the full history with copy / delete buttons.
 
 ---
@@ -144,7 +144,7 @@ All available from the Command Palette (`Ctrl+Shift+P`):
 
 | Command | Default keybinding |
 |---|---|
-| `Voice Input: Toggle Recording` | `Alt+M` |
+| `Voice Input: Toggle Recording` | `Alt+M` (Linux/Win) · `Ctrl+Alt+M` (macOS) |
 | `Voice Input: Set Soniox API Key` | — |
 | `Voice Input: Clear Soniox API Key` | — |
 | `Voice Input: Clear History` | — |
@@ -173,6 +173,16 @@ VSCode webviews (used by Claude Code chat, etc.) are sandboxed and reject `getUs
 ---
 
 ## Changelog
+
+### v1.0.5
+- **Fix:** Added missing `icon` property to the microphone webview panel — resolves VSCode manifest validation warning.
+
+### v1.0.4
+- **Feat:** The hint text below the mic button ("or press … to toggle") now displays your **currently configured keyboard shortcut** dynamically. Changing the binding via the VSCode Keyboard Shortcuts editor is reflected immediately — no hardcoded `Alt+M` in the UI.
+- macOS shows `Ctrl+Alt+M` by default; Linux/Win show `Alt+M`.
+
+### v1.0.3
+- **Fix:** Settings dropdowns no longer overflow the sidebar panel width at narrow sizes.
 
 ### v1.0.2
 - **Fix:** `Alt+M` now works when the Voice Input sidebar panel has keyboard focus. Previously the keydown event was silently swallowed by the webview browser context with no handler, so the shortcut had no effect. A `keydown`/`keyup` listener pair is now registered in the webview — keydown suppresses the default action, keyup fires the toggle.
