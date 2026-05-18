@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# release.sh — Build, update docs, commit, push, and package VSIX
+# release.sh — Build, update docs, commit, tag, push, and package VSIX
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
@@ -46,11 +46,21 @@ else
   echo "   Committed: chore: release v$VERSION"
 fi
 
-# ── 6. Push to remote ─────────────────────────────────────────────────────
+# ── 6. Tag the release ────────────────────────────────────────────────────
+TAG="v$VERSION"
+if git tag -l "$TAG" | grep -q "$TAG"; then
+  echo "   Tag $TAG already exists — skipping."
+else
+  git tag -a "$TAG" -m "Release $TAG"
+  echo "   Tagged: $TAG"
+fi
+
+# ── 7. Push to remote (commits + tags) ────────────────────────────────────
 echo "▶  Pushing to remote…"
 git push
+git push --tags
 
-# ── 7. Package VSIX ────────────────────────────────────────────────────────
+# ── 8. Package VSIX ────────────────────────────────────────────────────────
 echo "▶  Packaging VSIX…"
 if ! command -v vsce &>/dev/null; then
   echo "   vsce not found — installing…"

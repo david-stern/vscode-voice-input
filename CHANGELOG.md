@@ -1,7 +1,8 @@
 # Changelog
 
 All notable changes to **Voice Input (Soniox STT)** are documented here.  
-Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).
+Format follows [Keep a Changelog](https://keepachangelog.com/en/1.0.0/).  
+Each version corresponds to a git tag of the form `vX.Y.Z`.
 
 ---
 
