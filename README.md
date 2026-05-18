@@ -181,6 +181,8 @@ VSCode webviews (used by Claude Code chat, etc.) are sandboxed and reject `getUs
 
 ## Changelog
 
+See [CHANGELOG.md](CHANGELOG.md) for the full history.
+
 ### v1.0.7
 - **Feat:** Audio device selector is now **embedded in the extension sidebar Settings section** — a dropdown lists all detected microphones with a ↺ Scan button to refresh the list without leaving the panel. The same setting is also editable in the standard VSCode Settings UI (`voiceInput.audioDevice`).
 
@@ -204,11 +206,14 @@ VSCode webviews (used by Claude Code chat, etc.) are sandboxed and reject `getUs
 - **Behaviour:** When triggered from within the webview, the toggle fires on **key release** (`keyup`) rather than keydown, avoiding repeated triggers from key-repeat.
 
 ### v1.0.1
-- Initial public release.
-- Push-to-talk recording via `Alt+M` (editor / terminal focus only).
-- Sidebar panel with transcription history, settings, and API key management.
-- Linux Wayland / X11 / macOS / Windows support.
-- Soniox STT backend with model and language selection.
+- Added MIT `LICENSE` file and `repository` field to `package.json`.
+
+### v0.3.6
+- Platform install scripts (`scripts/install-linux.sh`, `install-mac.sh`, `install-windows.ps1`).
+- Auto dependency check on activation — surfaces a notification if `ffmpeg`, `ydotool`, or clipboard tools are missing.
+
+### v0.3.5
+- Initial release: push-to-talk recording, Soniox STT, universal injection, bilingual UI (he/en), speech history, secure API key storage, sidebar settings panel.
 
 ---
 

@@ -139,7 +139,8 @@
     "build": "node esbuild.js",
     "watch": "node esbuild.js --watch",
     "compile": "tsc -p ./",
-    "lint": "eslint src --ext ts"
+    "lint": "eslint src --ext ts",
+    "publish": "bash scripts/release.sh"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

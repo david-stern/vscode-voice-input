@@ -33,7 +33,7 @@ fi
 
 # ── 4. Stage all tracked changes (docs + build artifacts) ─────────────────
 echo "▶  Staging changes…"
-git add README.md package.json ${CHANGELOG:+$CHANGELOG}
+git add README.md CHANGELOG.md package.json ${CHANGELOG:+$CHANGELOG}
 
 # Stage anything else already tracked that was modified
 git add -u
