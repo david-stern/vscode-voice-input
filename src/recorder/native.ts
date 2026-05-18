@@ -124,6 +124,107 @@ function readDevice(): string {
   }
 }
 
+// ── Audio device enumeration ─────────────────────────────────────────────────
+
+export interface AudioDevice {
+  /** Identifier passed to the recorder (the -i argument value). */
+  id: string;
+  /** Human-readable label shown in the QuickPick. */
+  label: string;
+}
+
+/** Run a process and collect stdout (or stderr when captureStderr=true). */
+function runCapture(bin: string, args: string[], captureStderr = false): Promise<string> {
+  return new Promise((resolve) => {
+    const p = spawn(bin, args, {
+      stdio: captureStderr ? ['ignore', 'ignore', 'pipe'] : ['ignore', 'pipe', 'ignore'],
+      windowsHide: true,
+    });
+    let out = '';
+    const stream = captureStderr ? p.stderr : p.stdout;
+    stream?.on('data', (d: Buffer) => { out += d.toString(); });
+    p.on('error', () => resolve(''));
+    p.on('close', () => resolve(out));
+  });
+}
+
+async function listLinuxDevices(): Promise<AudioDevice[]> {
+  // PulseAudio / PipeWire: pactl list sources short
+  const raw = await runCapture('pactl', ['list', 'sources', 'short']);
+  if (raw.trim()) {
+    const devices: AudioDevice[] = [];
+    for (const line of raw.split('\n')) {
+      const parts = line.trim().split('\t');
+      if (parts.length < 2) continue;
+      const name = parts[1]?.trim();
+      if (!name || name.endsWith('.monitor')) continue; // skip loopback monitors
+      const label = name
+        .replace(/^alsa_(input|output)\./, '')
+        .replace(/\.\S+$/, '')
+        .replace(/_/g, ' ')
+        .trim();
+      devices.push({ id: name, label: label || name });
+    }
+    if (devices.length > 0) return devices;
+  }
+  // Fallback: ALSA arecord -l
+  const alsa = await runCapture('arecord', ['-l']);
+  if (alsa.trim()) {
+    const devices: AudioDevice[] = [];
+    const re = /card (\d+)[^[]*\[([^\]]+)\][^,]*,\s*device (\d+):/g;
+    let m: RegExpExecArray | null;
+    while ((m = re.exec(alsa))) {
+      devices.push({ id: `hw:${m[1]},${m[3]}`, label: m[2].trim() });
+    }
+    return devices;
+  }
+  return [];
+}
+
+async function listMacDevices(): Promise<AudioDevice[]> {
+  const stderr = await runCapture(
+    'ffmpeg',
+    ['-hide_banner', '-f', 'avfoundation', '-list_devices', 'true', '-i', ''],
+    true,
+  );
+  const devices: AudioDevice[] = [];
+  let inAudio = false;
+  for (const line of stderr.split('\n')) {
+    if (/AVFoundation audio devices/i.test(line)) { inAudio = true; continue; }
+    if (/AVFoundation video devices/i.test(line)) break;
+    if (!inAudio) continue;
+    const m = line.match(/\[(\d+)\]\s+(.+)/);
+    if (m) devices.push({ id: `:${m[1]}`, label: m[2].trim() });
+  }
+  return devices;
+}
+
+async function listWindowsDevices(): Promise<AudioDevice[]> {
+  const stderr = await runCapture(
+    'ffmpeg',
+    ['-hide_banner', '-list_devices', 'true', '-f', 'dshow', '-i', 'dummy'],
+    true,
+  );
+  const devices: AudioDevice[] = [];
+  const audioRe = /"([^"]+)"\s+\(audio\)/g;
+  let m: RegExpExecArray | null;
+  while ((m = audioRe.exec(stderr))) {
+    devices.push({ id: m[1], label: m[1] });
+  }
+  return devices;
+}
+
+/** Enumerate available audio input devices for the current platform. */
+export async function listAudioDevices(): Promise<AudioDevice[]> {
+  try {
+    if (isMac) return await listMacDevices();
+    if (isWin) return await listWindowsDevices();
+    return await listLinuxDevices();
+  } catch {
+    return [];
+  }
+}
+
 let _winDevCached: string | null = null;
 function detectWindowsAudioDevice(): string {
   if (_winDevCached !== null) return _winDevCached;

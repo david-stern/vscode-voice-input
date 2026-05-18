@@ -1,10 +1,11 @@
 import * as vscode from 'vscode';
 import * as path from 'path';
 import { spawn } from 'child_process';
+import { watch as fsWatch } from 'fs';
 import { MicViewProvider, ViewState, WebviewMessage } from './webview/micView';
 import { transcribe } from './stt/soniox';
 import { injectText, InjectionMode } from './inject';
-import { startRecorder, RecorderHandle, pickTool } from './recorder/native';
+import { startRecorder, RecorderHandle, pickTool, listAudioDevices, AudioDevice } from './recorder/native';
 import { HistoryStore } from './history';
 import { UiLang } from './webview/i18n';
 import { log, show as showLog } from './log';
@@ -126,6 +127,39 @@ export async function activate(context: vscode.ExtensionContext) {
   let handle: RecorderHandle | null = null;
   let isRecording = false;
 
+  // ── Device list cache ──────────────────────────────────────────────────────
+  let deviceCache: { devices: AudioDevice[]; ts: number } | null = null;
+  // Short TTL so a plug/unplug is reflected within a few seconds even without
+  // a file-system event (e.g. on macOS / Windows where we have no watcher).
+  const DEVICE_CACHE_TTL = 5_000;
+
+  async function getCachedDevices(forceRefresh = false): Promise<AudioDevice[]> {
+    const now = Date.now();
+    if (!forceRefresh && deviceCache && now - deviceCache.ts < DEVICE_CACHE_TTL) {
+      return deviceCache.devices;
+    }
+    const devices = await listAudioDevices();
+    deviceCache = { devices, ts: Date.now() };
+    return devices;
+  }
+
+  // Populate the cache in the background so it's ready on first record attempt.
+  void getCachedDevices();
+
+  // On Linux, watch /dev/snd/ for device additions/removals (USB mic plug/unplug)
+  // and immediately invalidate the cache so the next call gets a fresh list.
+  if (process.platform === 'linux') {
+    try {
+      const sndWatcher = fsWatch('/dev/snd/', () => {
+        deviceCache = null;
+        void getCachedDevices();
+      });
+      context.subscriptions.push({ dispose: () => sndWatcher.close() });
+    } catch {
+      // /dev/snd/ may not exist on systems without ALSA (unlikely but safe to ignore)
+    }
+  }
+
   const setIdle = () => {
     isRecording = false;
     status.text = '$(mic) Voice';
@@ -176,6 +210,26 @@ export async function activate(context: vscode.ExtensionContext) {
 
   async function startRecording() {
     if (isRecording || handle) return;
+
+    // If the device cache is populated and shows no audio inputs, block early
+    // and guide the user instead of letting the recorder fail with a cryptic error.
+    if (deviceCache) {
+      const configuredDevice = vscode.workspace
+        .getConfiguration('voiceInput')
+        .get<string>('audioDevice', '')
+        .trim();
+      if (deviceCache.devices.length === 0 && !configuredDevice) {
+        const sel = await vscode.window.showErrorMessage(
+          'Voice Input: No audio input source found. Connect a microphone and try again.',
+          'Select Device',
+        );
+        if (sel === 'Select Device') {
+          await vscode.commands.executeCommand('voiceInput.selectAudioDevice');
+        }
+        return;
+      }
+    }
+
     try {
       handle = await startRecorder();
       setRecording();
@@ -313,6 +367,57 @@ export async function activate(context: vscode.ExtensionContext) {
       // IMPORTANT: do NOT focus/open the view — recording happens in background.
       if (isRecording) await stopRecording();
       else await startRecording();
+    }),
+    vscode.commands.registerCommand('voiceInput.selectAudioDevice', async () => {
+      const devices = await vscode.window.withProgress(
+        { location: vscode.ProgressLocation.Notification, title: 'Voice Input: Scanning audio devices…' },
+        () => getCachedDevices(true),
+      );
+
+      if (devices.length === 0) {
+        vscode.window.showErrorMessage(
+          'Voice Input: No audio input sources found. Make sure a microphone is connected.',
+        );
+        return;
+      }
+
+      const currentDevice = vscode.workspace
+        .getConfiguration('voiceInput')
+        .get<string>('audioDevice', '');
+
+      interface DeviceItem extends vscode.QuickPickItem { deviceId: string; }
+
+      const items: DeviceItem[] = [
+        {
+          label: '$(circle-slash) System default',
+          description: 'Let the OS choose the default microphone',
+          deviceId: '',
+          picked: !currentDevice,
+        },
+        ...devices.map((d) => ({
+          label: `$(device-microphone) ${d.label}`,
+          description: d.id,
+          deviceId: d.id,
+          picked: d.id === currentDevice,
+        })),
+      ];
+
+      const pick = await vscode.window.showQuickPick(items, {
+        title: 'Select Audio Input Device',
+        placeHolder: 'Choose a microphone…',
+        matchOnDescription: true,
+      });
+
+      if (!pick) return;
+
+      await vscode.workspace
+        .getConfiguration('voiceInput')
+        .update('audioDevice', pick.deviceId, vscode.ConfigurationTarget.Global);
+
+      const friendlyName = pick.deviceId
+        ? `"${pick.label.replace(/^\$\([^)]+\)\s*/, '')}"`
+        : 'system default';
+      vscode.window.showInformationMessage(`Voice Input: Audio device set to ${friendlyName}.`);
     }),
     vscode.commands.registerCommand('voiceInput.setApiKey', async () => {
       const key = await vscode.window.showInputBox({

@@ -10,6 +10,8 @@ Hebrew is the default language. The full UI is bilingual (he / en) with native R
 
 - **Background recording.** Toggles recording from anywhere (default: `Alt+M` on Linux/Win, `Ctrl+Alt+M` on macOS) — customizable in sidebar, shows your configured shortcut dynamically.
 - **Universal injection.** Editor → cursor insertion. Chat webviews / panels → clipboard + `Ctrl+V` simulated via `ydotool`. Works around VSCode's webview microphone block.
+- **Audio device selection.** `Voice Input: Select Audio Device` lists every available microphone on the current platform and lets you pick one with a QuickPick. The selection is saved to `voiceInput.audioDevice`. On Linux the list updates instantly when a USB mic is plugged or unplugged; on macOS/Windows it refreshes automatically within seconds.
+- **No-device guard.** If no audio input source is detected when you try to start a recording, the extension blocks the attempt and offers a **Select Device** button instead of surfacing a cryptic recorder error.
 - **Speech history.** Every transcription is saved with timestamp + language. One-click copy or delete per entry. Configurable TTL (1 day / 7 days / 30 days / forever).
 - **In-panel settings.** Speech language, UI language, history TTL, Soniox model, recording shortcut, API key — all editable from the sidebar without leaving the editor.
 - **Bilingual UI.** Hebrew (default) and English with automatic RTL/LTR layout.
@@ -133,6 +135,9 @@ Configurable from both the in-panel **Settings** section (collapsible) and `sett
 | `voiceInput.historyTtlDays` | `0` (forever), `1`, `7`, `30` | `30` |
 | `voiceInput.sttModel` | Soniox model id | `stt-async-v4` |
 | `voiceInput.injectionMode` | `auto`, `paste-key`, `type-key`, `editor-only`, `clipboard-only` | `auto` |
+| `voiceInput.audioDevice` | Device id (see **Select Audio Device**) or `""` for system default | `""` |
+
+To pick a device interactively run **`Voice Input: Select Audio Device`** from the Command Palette — it enumerates all available inputs and writes the chosen id to `voiceInput.audioDevice` automatically.
 
 `auto` injection: text-file tab → editor cursor; everything else → clipboard + simulated `Ctrl+V`.
 
@@ -145,6 +150,7 @@ All available from the Command Palette (`Ctrl+Shift+P`):
 | Command | Default keybinding |
 |---|---|
 | `Voice Input: Toggle Recording` | `Alt+M` (Linux/Win) · `Ctrl+Alt+M` (macOS) |
+| `Voice Input: Select Audio Device` | — |
 | `Voice Input: Set Soniox API Key` | — |
 | `Voice Input: Clear Soniox API Key` | — |
 | `Voice Input: Clear History` | — |
@@ -168,11 +174,17 @@ VSCode webviews (used by Claude Code chat, etc.) are sandboxed and reject `getUs
 | Status bar says "paste failed" | `ydotoold` not running | `sudo systemctl status ydotoold` and re-enable per setup section |
 | Random ASCII / `?` characters appear in chat instead of text | VSCode is running an old build of the extension | `Developer: Reload Window`; verify version with `Voice Input: Show Diagnostics` |
 | Hebrew comes back as gibberish from Soniox | Wrong language hint | Set **Speech language** to `he` in the panel |
-| Recording stops immediately | Default mic is a monitor source | `pactl get-default-source` — set a real input device |
+| Recording stops immediately | Default mic is a monitor source | Run `Voice Input: Select Audio Device` and pick a real input (not a `monitor`) |
+| "No audio input source found" when pressing `Alt+M` | No microphone connected or detected | Plug in a microphone, then run `Voice Input: Select Audio Device` |
 
 ---
 
 ## Changelog
+
+### v1.0.6
+- **Feat:** `Voice Input: Select Audio Device` command — enumerates all microphones on the current platform (PulseAudio/PipeWire on Linux, AVFoundation on macOS, DirectShow on Windows) and lets you pick one from a QuickPick. Selection is saved to `voiceInput.audioDevice`.
+- **Feat:** Dynamic device list refresh. On Linux the extension watches `/dev/snd/` with a filesystem watcher so plug/unplug events are reflected immediately. On macOS/Windows the cache has a 5-second TTL so stale data is never shown for more than a few seconds.
+- **Feat:** No-device guard — if no audio input is detected when starting a recording, the attempt is blocked with a clear error and a **Select Device** shortcut instead of a cryptic recorder failure message.
 
 ### v1.0.5
 - **Fix:** Added missing `icon` property to the microphone webview panel — resolves VSCode manifest validation warning.
