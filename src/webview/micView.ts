@@ -14,6 +14,8 @@ export type WebviewMessage =
   | { type: 'set-api-key' }
   | { type: 'open-keybindings' }
   | { type: 'refresh-meta' }
+  | { type: 'audio-device-change'; deviceId: string }
+  | { type: 'audio-device-scan' }
   | {
       type: 'settings-update';
       speechLang: string;
@@ -34,6 +36,8 @@ export interface ViewState {
   languages: LanguageInfo[];
   metaLoading: boolean;
   metaError?: string;
+  audioDevice: string;
+  audioDevices: { id: string; label: string }[];
 }
 
 export class MicViewProvider implements vscode.WebviewViewProvider {

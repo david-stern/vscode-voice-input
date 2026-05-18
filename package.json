@@ -2,7 +2,7 @@
   "name": "voice-input",
   "displayName": "Voice Input (Soniox STT)",
   "description": "Push-to-talk voice-to-text for any chat or editor input. Powered by Soniox.",
-  "version": "1.0.6",
+  "version": "1.0.7",
   "publisher": "david-stern",
   "author": {
     "name": "David Stern"
@@ -101,7 +101,7 @@
         "voiceInput.audioDevice": {
           "type": "string",
           "default": "",
-          "description": "Optional audio device name override. Windows: dshow audio device name (e.g. 'Microphone (Realtek)'). macOS: avfoundation index (e.g. ':1'). Linux: PulseAudio source name. Empty = system default."
+          "description": "Audio input device override. Use 'Voice Input: Select Audio Device' (Command Palette or the Settings section in the Voice Input sidebar) to pick from detected devices. Windows: DirectShow device name (e.g. 'Microphone (Realtek)'). macOS: AVFoundation index (e.g. ':1'). Linux: PulseAudio source name. Empty = system default."
         },
         "voiceInput.historyTtlDays": {
           "type": "number",

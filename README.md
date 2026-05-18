@@ -181,6 +181,9 @@ VSCode webviews (used by Claude Code chat, etc.) are sandboxed and reject `getUs
 
 ## Changelog
 
+### v1.0.7
+- **Feat:** Audio device selector is now **embedded in the extension sidebar Settings section** — a dropdown lists all detected microphones with a ↺ Scan button to refresh the list without leaving the panel. The same setting is also editable in the standard VSCode Settings UI (`voiceInput.audioDevice`).
+
 ### v1.0.6
 - **Feat:** `Voice Input: Select Audio Device` command — enumerates all microphones on the current platform (PulseAudio/PipeWire on Linux, AVFoundation on macOS, DirectShow on Windows) and lets you pick one from a QuickPick. Selection is saved to `voiceInput.audioDevice`.
 - **Feat:** Dynamic device list refresh. On Linux the extension watches `/dev/snd/` with a filesystem watcher so plug/unplug events are reflected immediately. On macOS/Windows the cache has a 5-second TTL so stale data is never shown for more than a few seconds.

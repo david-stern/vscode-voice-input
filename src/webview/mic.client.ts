@@ -28,6 +28,8 @@ interface InitState {
   languages: LanguageInfo[];
   metaLoading: boolean;
   metaError?: string;
+  audioDevice: string;
+  audioDevices: { id: string; label: string }[];
 }
 
 const vscode = acquireVsCodeApi();
@@ -43,6 +45,8 @@ let state: InitState = {
   models: [],
   languages: [],
   metaLoading: false,
+  audioDevice: '',
+  audioDevices: [],
 };
 
 function t(): Strings {
@@ -146,6 +150,18 @@ function render() {
             ${renderModelOptions()}
           </select>
           ${state.metaError ? `<span class="meta-error">${escapeHtml(state.metaError)}</span>` : ''}
+        </label>
+        <label class="full">
+          <span>${escapeHtml(t().settingsAudioDevice)}</span>
+          <div class="kb-row">
+            <select id="audio-device" style="flex:1">
+              <option value="" ${!state.audioDevice ? 'selected' : ''}>${escapeHtml(t().audioDeviceDefault)}</option>
+              ${state.audioDevices.map((d) =>
+                `<option value="${escapeHtml(d.id)}" ${state.audioDevice === d.id ? 'selected' : ''}>${escapeHtml(d.label)}</option>`
+              ).join('')}
+            </select>
+            <button id="audio-device-scan" class="btn-ghost" title="${escapeHtml(t().audioDeviceScan)}">↺</button>
+          </div>
         </label>
         <label class="full">
           <span>${escapeHtml(t().settingsKey)}</span>
@@ -289,6 +305,14 @@ function attachHandlers() {
   });
   document.getElementById('set-api-key')?.addEventListener('click', () => {
     vscode.postMessage({ type: 'set-api-key' });
+  });
+
+  document.getElementById('audio-device')?.addEventListener('change', (e) => {
+    state.audioDevice = (e.target as HTMLSelectElement).value;
+    vscode.postMessage({ type: 'audio-device-change', deviceId: state.audioDevice });
+  });
+  document.getElementById('audio-device-scan')?.addEventListener('click', () => {
+    vscode.postMessage({ type: 'audio-device-scan' });
   });
 }
 

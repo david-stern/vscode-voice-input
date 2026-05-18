@@ -36,6 +36,9 @@ export interface Strings {
   changeKey: string;
   refresh: string;
   toToggle: string;
+  settingsAudioDevice: string;
+  audioDeviceDefault: string;
+  audioDeviceScan: string;
 }
 
 export const STRINGS: Record<UiLang, Strings> = {
@@ -75,6 +78,9 @@ export const STRINGS: Record<UiLang, Strings> = {
     settingsKey: 'קיצור הקלטה',
     changeKey: 'שנה...',
     refresh: 'רענן',
+    settingsAudioDevice: 'מקור שמע',
+    audioDeviceDefault: 'ברירת מחדל של המערכת',
+    audioDeviceScan: 'סרוק',
   },
   en: {
     appTitle: 'Voice Input',
@@ -112,5 +118,8 @@ export const STRINGS: Record<UiLang, Strings> = {
     settingsKey: 'Recording shortcut',
     changeKey: 'Change...',
     refresh: 'Refresh',
+    settingsAudioDevice: 'Audio device',
+    audioDeviceDefault: 'System default',
+    audioDeviceScan: 'Scan',
   },
 };

@@ -152,7 +152,7 @@ export async function activate(context: vscode.ExtensionContext) {
     try {
       const sndWatcher = fsWatch('/dev/snd/', () => {
         deviceCache = null;
-        void getCachedDevices();
+        void getCachedDevices().then(() => void pushFullState());
       });
       context.subscriptions.push({ dispose: () => sndWatcher.close() });
     } catch {
@@ -186,6 +186,7 @@ export async function activate(context: vscode.ExtensionContext) {
   async function pushFullState() {
     const s = readSettings();
     const entries = await history.list(s.ttlDays);
+    const audioDevice = vscode.workspace.getConfiguration('voiceInput').get<string>('audioDevice', '');
     const view: ViewState = {
       uiLang: s.uiLang,
       speechLang: s.speechLang,
@@ -198,6 +199,8 @@ export async function activate(context: vscode.ExtensionContext) {
       languages: meta.languages,
       metaLoading: meta.loading,
       metaError: meta.error,
+      audioDevice,
+      audioDevices: deviceCache?.devices ?? [],
     };
     provider.postState(view);
   }
@@ -340,6 +343,16 @@ export async function activate(context: vscode.ExtensionContext) {
       case 'refresh-meta':
         await refreshMeta();
         break;
+      case 'audio-device-change':
+        await vscode.workspace
+          .getConfiguration('voiceInput')
+          .update('audioDevice', msg.deviceId, vscode.ConfigurationTarget.Global);
+        break;
+      case 'audio-device-scan': {
+        await getCachedDevices(true);
+        await pushFullState();
+        break;
+      }
       case 'set-api-key':
         await vscode.commands.executeCommand('voiceInput.setApiKey');
         break;
