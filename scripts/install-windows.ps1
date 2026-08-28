@@ -1,13 +1,16 @@
-# Voice Input — Windows dependency installer
+# Voice Input - Windows dependency installer
 # Run once after installing the extension to get ffmpeg.
 # Requires PowerShell 5+ (ships with Windows 10/11).
+# NOTE: keep this file ASCII-only (no box-drawing, arrows, or em-dashes).
+#       PowerShell 5.1 reads UTF-8 without BOM as ANSI and mis-decodes
+#       those characters, which breaks string literals.
 
 $ErrorActionPreference = 'Stop'
 
 Write-Host ""
-Write-Host "╔══════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║   Voice Input — Windows dependency installer     ║" -ForegroundColor Cyan
-Write-Host "╚══════════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host "======================================================" -ForegroundColor Cyan
+Write-Host "   Voice Input - Windows dependency installer" -ForegroundColor Cyan
+Write-Host "======================================================" -ForegroundColor Cyan
 Write-Host ""
 
 function Test-Cmd($cmd) {
@@ -15,7 +18,7 @@ function Test-Cmd($cmd) {
     catch { return $false }
 }
 
-# ── ffmpeg ───────────────────────────────────────────────────────────────────
+# -- ffmpeg -------------------------------------------------------------------
 if (Test-Cmd "ffmpeg") {
     $ver = (ffmpeg -version 2>&1 | Select-Object -First 1)
     Write-Host "  v  ffmpeg already installed ($ver)." -ForegroundColor Green
@@ -45,7 +48,7 @@ if (Test-Cmd "ffmpeg") {
     }
 }
 
-# ── Built-ins check ──────────────────────────────────────────────────────────
+# -- Built-ins check ----------------------------------------------------------
 Write-Host ""
 Write-Host "Built-in tools (no install needed):"
 foreach ($bin in @("powershell", "clip")) {
@@ -57,10 +60,10 @@ foreach ($bin in @("powershell", "clip")) {
 }
 
 Write-Host ""
-Write-Host "╔══════════════════════════════════════════════════════════════════════╗" -ForegroundColor Cyan
-Write-Host "║  All done!                                                           ║" -ForegroundColor Cyan
-Write-Host "║  If ffmpeg was just installed, restart VSCode so PATH is refreshed. ║" -ForegroundColor Cyan
-Write-Host "║  Find your audio device name with:                                  ║" -ForegroundColor Cyan
-Write-Host "║    ffmpeg -hide_banner -list_devices true -f dshow -i dummy         ║" -ForegroundColor Cyan
-Write-Host "╚══════════════════════════════════════════════════════════════════════╝" -ForegroundColor Cyan
+Write-Host "======================================================" -ForegroundColor Cyan
+Write-Host "  All done!" -ForegroundColor Cyan
+Write-Host "  If ffmpeg was just installed, restart VSCode so PATH is refreshed." -ForegroundColor Cyan
+Write-Host "  Find your audio device name with:" -ForegroundColor Cyan
+Write-Host "    ffmpeg -hide_banner -list_devices true -f dshow -i dummy" -ForegroundColor Cyan
+Write-Host "======================================================" -ForegroundColor Cyan
 Write-Host ""
