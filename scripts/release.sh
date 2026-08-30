@@ -27,17 +27,17 @@ trap 'rm -f "$PACKAGE_LIST"' EXIT
 "${VSCE[@]}" ls > "$PACKAGE_LIST"
 
 REQUIRED_PACKAGE_FILES=(
-  "extension/node_modules/@picovoice/pvrecorder-node/lib/linux/x86_64/pv_recorder.node"
-  "extension/node_modules/@picovoice/pvrecorder-node/lib/mac/arm64/pv_recorder.node"
-  "extension/node_modules/@picovoice/pvrecorder-node/lib/mac/x86_64/pv_recorder.node"
-  "extension/node_modules/@picovoice/pvrecorder-node/lib/raspberry-pi/cortex-a53-aarch64/pv_recorder.node"
-  "extension/node_modules/@picovoice/pvrecorder-node/lib/raspberry-pi/cortex-a53/pv_recorder.node"
-  "extension/node_modules/@picovoice/pvrecorder-node/lib/raspberry-pi/cortex-a72-aarch64/pv_recorder.node"
-  "extension/node_modules/@picovoice/pvrecorder-node/lib/raspberry-pi/cortex-a72/pv_recorder.node"
-  "extension/node_modules/@picovoice/pvrecorder-node/lib/raspberry-pi/cortex-a76-aarch64/pv_recorder.node"
-  "extension/node_modules/@picovoice/pvrecorder-node/lib/raspberry-pi/cortex-a76/pv_recorder.node"
-  "extension/node_modules/@picovoice/pvrecorder-node/lib/windows/amd64/pv_recorder.node"
-  "extension/node_modules/@picovoice/pvrecorder-node/lib/windows/arm64/pv_recorder.node"
+  "extension/out/vendor/pvrecorder-node/lib/linux/x86_64/pv_recorder.node"
+  "extension/out/vendor/pvrecorder-node/lib/mac/arm64/pv_recorder.node"
+  "extension/out/vendor/pvrecorder-node/lib/mac/x86_64/pv_recorder.node"
+  "extension/out/vendor/pvrecorder-node/lib/raspberry-pi/cortex-a53-aarch64/pv_recorder.node"
+  "extension/out/vendor/pvrecorder-node/lib/raspberry-pi/cortex-a53/pv_recorder.node"
+  "extension/out/vendor/pvrecorder-node/lib/raspberry-pi/cortex-a72-aarch64/pv_recorder.node"
+  "extension/out/vendor/pvrecorder-node/lib/raspberry-pi/cortex-a72/pv_recorder.node"
+  "extension/out/vendor/pvrecorder-node/lib/raspberry-pi/cortex-a76-aarch64/pv_recorder.node"
+  "extension/out/vendor/pvrecorder-node/lib/raspberry-pi/cortex-a76/pv_recorder.node"
+  "extension/out/vendor/pvrecorder-node/lib/windows/amd64/pv_recorder.node"
+  "extension/out/vendor/pvrecorder-node/lib/windows/arm64/pv_recorder.node"
   "extension/out/licenses/PICOVOICE-LICENSE.txt"
 )
 

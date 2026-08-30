@@ -11,8 +11,12 @@ Hebrew is the default language. The full UI is bilingual (he / en) with native R
 - **Background recording.** Toggles recording from anywhere (default: `Alt+M` on Linux/Win, `Ctrl+Alt+M` on macOS) — customizable in sidebar, shows your configured shortcut dynamically.
 - **Universal injection.** Editor → cursor insertion. Chat webviews / panels → clipboard + `Ctrl+V` simulated via `ydotool`. Works around VSCode's webview microphone block.
 - **Audio device selection.** `Voice Input: Select Audio Device` lists every available microphone on the current platform and saves a stable identity to `voiceInput.audioDevice`. Use **Scan** to refresh after plugging or unplugging a device; the short-lived cache also refreshes within seconds.
-- **Opt-in assistant listening.** Explicitly start an assistant session from the sidebar or Command Palette. Local silence detection sends only completed speech segments to Soniox, requires one-time modal consent, and stops when VS Code closes. It never starts automatically and never submits a chat message.
-- **Safe wake actions.** After a Hebrew or English wake phrase, the assistant can open VS Code Chat, toggle the terminal, open Voice Input settings, or stop listening. Any other post-wake text is append-only insertion/paste.
+- **Opt-in assistant listening.** Explicitly start an assistant session from the sidebar or Command Palette. Local silence detection sends only completed speech segments to Soniox, requires one-time modal consent, and stops when VS Code closes. It never starts automatically.
+- **Optional smart planning.** DeepSeek can interpret natural Hebrew or English requests after a separate disclosure and API-key setup. Only the post-wake request, selected persona, locale, and minimal target kind/focus metadata are sent. Screenshots, files, selections, clipboard content, terminal history, and chat history are never included.
+- **Six assistant modes.** Choose teacher/lecturer, secretary, friend, tour guide, mathematician, or philosopher. Each mode is polite, explains its proposed action and reason, admits uncertainty, and waits for local execution before claiming success.
+- **Selectable spoken replies.** The assistant can answer aloud using voices installed on the operating system. Voice and rate are selectable in the sidebar, and speech can be stopped or disabled independently of listening.
+- **Closed safe actions.** The assistant can write to the current focused VS Code control, an explicit editor, terminal, or built-in chat; repeat a recent action; open supported VS Code surfaces; explain an answer; or stop listening. Terminal text is inserted with execution disabled and control characters are rejected.
+- **Two-step chat send.** A send request prepares a non-submitting partial query through VS Code's documented built-in Chat command and opens a 12-second pending action. Only a locally recognized, distinct later voice confirmation or the matching sidebar approval button may invoke the documented submit command; DeepSeek can never confirm. Third-party Claude/ChatGPT/Codex webviews have no public submit API, so their text must be pasted and sent manually.
 - **No-device guard.** If no audio input source is detected when you try to start a recording, the extension blocks the attempt and offers a **Select Device** button instead of surfacing a cryptic recorder error.
 - **Speech history.** Every transcription is saved with timestamp + language. One-click copy or delete per entry. Configurable TTL (1 day / 7 days / 30 days / forever).
 - **In-panel settings.** Speech language, UI language, history TTL, Soniox model, recording shortcut, API key — all editable from the sidebar without leaving the editor.
@@ -115,6 +119,8 @@ Grant desktop VS Code microphone permission when Windows prompts. PowerShell shi
 
 For assistant listening, use **Voice Input: Toggle Assistant Listening** or the sidebar control. The first start shows a modal disclosure. Listening remains active only while desktop VS Code is running and only after that explicit start; reloading or reopening VS Code does not restart it. Say a built-in Hebrew/English wake phrase (or configure your own) before a safe action or text to paste.
 
+To enable natural-language intent planning, choose **Set up DeepSeek** in the assistant panel or run **Voice Input: Set DeepSeek API Key**. DeepSeek consent is separate from microphone/Soniox consent. Without consent or a key, the original deterministic wake commands and safe paste behavior remain available. Spoken replies use the browser speech engine embedded in desktop VS Code, so the list and quality of voices depend on the operating system.
+
 ---
 
 ## Settings
@@ -130,6 +136,11 @@ Configurable from both the in-panel **Settings** section (collapsible) and `sett
 | `voiceInput.injectionMode` | `auto`, `paste-key`, `type-key`, `editor-only`, `clipboard-only` | `auto` |
 | `voiceInput.audioDevice` | Device id (see **Select Audio Device**) or `""` for system default | `""` |
 | `voiceInput.assistantWakePhrase` | Custom phrase, or `""` for the built-in Hebrew/English phrases | `""` |
+| `voiceInput.assistantPersona` | `teacher-lecturer`, `secretary`, `friend`, `tour-guide`, `mathematician`, `philosopher` | `teacher-lecturer` |
+| `voiceInput.deepSeekModel` | DeepSeek text model id | `deepseek-v4-flash` |
+| `voiceInput.assistantSpeechEnabled` | `true`, `false` | `true` |
+| `voiceInput.assistantSpeechVoiceUri` | Voice selected from installed platform voices | `""` (platform default) |
+| `voiceInput.assistantSpeechRate` | `0.5`–`2` | `1` |
 
 To pick a device interactively run **`Voice Input: Select Audio Device`** from the Command Palette — it enumerates all available inputs and writes the chosen id to `voiceInput.audioDevice` automatically.
 
@@ -148,6 +159,8 @@ All available from the Command Palette (`Ctrl+Shift+P`):
 | `Voice Input: Select Audio Device` | — |
 | `Voice Input: Set Soniox API Key` | — |
 | `Voice Input: Clear Soniox API Key` | — |
+| `Voice Input: Set DeepSeek API Key` | — |
+| `Voice Input: Clear DeepSeek API Key` | — |
 | `Voice Input: Clear History` | — |
 | `Voice Input: Show Diagnostics` | — |
 
@@ -157,7 +170,9 @@ All available from the Command Palette (`Ctrl+Shift+P`):
 
 ## Why two paths for injection?
 
-VS Code webviews used by Claude, ChatGPT, and GitHub Copilot are sandboxed from other extensions. Voice Input captures through its bundled native recorder, preserves the exact Hebrew/Unicode text on the clipboard, and simulates a normal paste into the focused vendor input. It never presses Enter. Editors use the supported `vscode.TextEditor.edit` path.
+VS Code webviews used by Claude, ChatGPT, Codex, and GitHub Copilot are sandboxed from other extensions. Voice Input captures through its bundled native recorder and preserves exact Hebrew/Unicode. Editors use the supported `vscode.TextEditor.edit` path; built-in VS Code Chat drafts use the documented non-submitting partial-query command. Vendor inputs without an insertion API use an explicitly user-focused paste path and remain manual-send.
+
+VS Code does not expose the exact DOM focus of another extension's webview. Voice Input therefore labels an opaque destination honestly as the **focused VS Code control** rather than guessing that a stale active editor is focused. It rechecks VS Code window and tab/editor/terminal identities before mutations. It does not inspect screenshots, DOM selectors, or screen coordinates, and it never performs arbitrary clicks. Safe programmatic submission is limited to a draft prepared through the built-in VS Code Chat API after two-step local confirmation; vendor chats remain manual-send.
 
 The Voice Input sidebar can render its own transcript history with automatic RTL/LTR direction. VS Code does not expose supported APIs for restyling the sandboxed DOM owned by Claude, ChatGPT, or Copilot, so this extension can guarantee exact Hebrew paste but cannot force those vendors' chat inputs or messages to adopt RTL styling.
 
@@ -180,10 +195,10 @@ The Voice Input sidebar can render its own transcript history with automatic RTL
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
-### Version 1.1.0
+### Version 1.2.0
 - **Audio:** Bundled Picovoice PvRecorder capture replaces external audio-recording executables; desktop VS Code uses the local microphone and no longer needs `ffmpeg` for capture.
-- **Assistant:** Explicit, consented listening sessions with local speech segmentation, bounded transcription work, allowlisted VS Code actions, wake phrases, visible state, and no chat auto-submit.
-- **Privacy/RTL:** Best-effort Soniox remote cleanup, content-free diagnostics, exact Unicode paste, and clearer sandboxed vendor-webview limits.
+- **Assistant:** Optional DeepSeek planning, six validated personas, selectable local speech voices, bounded transcription work, and focus-aware allowlisted VS Code actions.
+- **Safety, privacy, and RTL:** Built-in Chat submission requires a separate local confirmation; vendor chats remain manual-send. DeepSeek receives only disclosed minimal context, diagnostics remain content-free, and exact Unicode paste is preserved.
 
 ---
 

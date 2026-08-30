@@ -2,7 +2,7 @@
   "name": "voice-input",
   "displayName": "Voice Input (Soniox STT)",
   "description": "Push-to-talk voice-to-text for any chat or editor input. Powered by Soniox.",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "publisher": "david-stern",
   "author": {
     "name": "David Stern"
@@ -69,6 +69,14 @@
         "title": "Voice Input: Clear Soniox API Key"
       },
       {
+        "command": "voiceInput.setDeepSeekApiKey",
+        "title": "Voice Input: Set DeepSeek API Key"
+      },
+      {
+        "command": "voiceInput.clearDeepSeekApiKey",
+        "title": "Voice Input: Clear DeepSeek API Key"
+      },
+      {
         "command": "voiceInput.clearHistory",
         "title": "Voice Input: Clear History"
       },
@@ -115,6 +123,41 @@
           "default": "",
           "description": "Optional assistant wake phrase. Empty uses the built-in Hebrew and English wake phrases."
         },
+        "voiceInput.assistantPersona": {
+          "type": "string",
+          "default": "teacher-lecturer",
+          "enum": [
+            "teacher-lecturer",
+            "secretary",
+            "friend",
+            "tour-guide",
+            "mathematician",
+            "philosopher"
+          ],
+          "description": "Validated conversational style for DeepSeek planning and explanations."
+        },
+        "voiceInput.deepSeekModel": {
+          "type": "string",
+          "default": "deepseek-v4-flash",
+          "description": "DeepSeek text model used for optional smart intent planning."
+        },
+        "voiceInput.assistantSpeechEnabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Allow the assistant to speak feedback using a voice installed on the system."
+        },
+        "voiceInput.assistantSpeechVoiceUri": {
+          "type": "string",
+          "default": "",
+          "description": "Voice URI selected from the operating system voices shown in the sidebar."
+        },
+        "voiceInput.assistantSpeechRate": {
+          "type": "number",
+          "default": 1,
+          "minimum": 0.5,
+          "maximum": 2,
+          "description": "Assistant speaking rate."
+        },
         "voiceInput.historyTtlDays": {
           "type": "number",
           "default": 30,
@@ -156,6 +199,7 @@
     "publish": "bash scripts/release.sh"
   },
   "devDependencies": {
+    "@picovoice/pvrecorder-node": "1.2.9",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.90.0",
     "@typescript-eslint/eslint-plugin": "^8.59.3",
@@ -165,7 +209,5 @@
     "tsx": "4.23.13",
     "typescript": "^5.4.0"
   },
-  "dependencies": {
-    "@picovoice/pvrecorder-node": "1.2.9"
-  }
+  "dependencies": {}
 }

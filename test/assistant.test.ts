@@ -180,3 +180,13 @@ test('all non-allowlisted post-wake text is paste-only and never auto-submits', 
     submit: false,
   });
 });
+
+test('a custom wake phrase preserves the stripped request for deterministic fallback', () => {
+  const result = parseAssistantText('שלום מערכת, פתח את הטרמינל', {
+    wakePhrases: ['שלום מערכת'],
+  });
+  assert.equal(result.wakeDetected, true);
+  if (!result.wakeDetected) assert.fail('custom wake phrase was not detected');
+  assert.equal(result.postWakeText, 'פתח את הטרמינל');
+  assert.deepEqual(result.intent, { kind: 'action', action: 'open-terminal' });
+});

@@ -8,6 +8,21 @@ Each version corresponds to a git tag of the form `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [1.2.0] — 2026-08-30
+
+### Added
+- Optional DeepSeek text planning with a separate privacy disclosure, API key stored only in VS Code SecretStorage, configurable model, strict JSON schema, finite timeout, and deterministic fallback when disabled.
+- Six validated assistant personas: teacher/lecturer, secretary, friend, tour guide, mathematician, and philosopher. Replies explain the action and reason without claiming success before local execution.
+- Selectable platform speech-synthesis voices, speaking-rate control, bounded FIFO speech, independent stop/disable controls, and bilingual spoken/visible feedback.
+- Focus-aware target snapshots carried from utterance completion through planning and pre-action revalidation, plus five-minute in-memory repeat-last behavior.
+- Two-step built-in chat send flow: prepare a non-submitting partial query through the documented VS Code Chat command, wait up to 12 seconds, then require a locally recognized distinct voice phrase or matching UI confirmation before using the documented submit command. DeepSeek cannot grant confirmation authority.
+
+### Security and privacy
+- Assistant execution is restricted to a closed local action allowlist. Model output cannot provide arbitrary VS Code commands, keys, DOM selectors, coordinates, or automatic submit instructions.
+- DeepSeek receives only post-wake request text, validated persona, locale, and minimal target kind/focus metadata—never screenshots, documents, selections, clipboard content, terminal history, or chat history.
+- Terminal insertion rejects line breaks, C0/C1 controls, and Unicode line/paragraph separators and always calls `Terminal.sendText(text, false)`.
+- Third-party chat webviews remain paste-only/manual-send because they expose no supported submit or DOM-control API. The assistant is VS Code-only and performs no screenshot analysis or arbitrary clicking.
+
 ## [1.1.0] — 2026-08-30
 
 ### Added

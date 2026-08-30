@@ -59,15 +59,31 @@ export async function injectText(text: string, mode: InjectionMode = 'auto'): Pr
   await clipboardPasteKey(text);
 }
 
-async function appendAtCursor(editor: vscode.TextEditor, text: string) {
-  await editor.edit((eb) => {
+/** Paste into the currently focused VS Code control without inferring its DOM type. */
+export async function injectIntoFocusedControl(
+  text: string,
+  targetStillValid?: () => boolean,
+): Promise<boolean> {
+  if (!text) return false;
+  return clipboardPasteKey(text, targetStillValid);
+}
+
+/** Insert into one explicitly selected editor using the supported VS Code API. */
+export async function injectIntoEditor(editor: vscode.TextEditor, text: string): Promise<boolean> {
+  if (!text) return false;
+  return appendAtCursor(editor, text);
+}
+
+async function appendAtCursor(editor: vscode.TextEditor, text: string): Promise<boolean> {
+  const applied = await editor.edit((eb) => {
     for (const sel of editor.selections) {
       const pos = sel.active;
       const insert = needsLeadingSpace(editor.document, pos) ? ' ' + text : text;
       eb.insert(pos, insert);
     }
   });
-  log('editor.edit done');
+  log('editor.edit done:', applied);
+  return applied;
 }
 
 function needsLeadingSpace(doc: vscode.TextDocument, pos: vscode.Position): boolean {
@@ -76,7 +92,10 @@ function needsLeadingSpace(doc: vscode.TextDocument, pos: vscode.Position): bool
   return prev.length > 0 && !/\s/.test(prev);
 }
 
-async function clipboardPasteKey(text: string) {
+async function clipboardPasteKey(
+  text: string,
+  targetStillValid?: () => boolean,
+): Promise<boolean> {
   const tool = await pickTypeTool();
   log('paste-key tool:', tool ? tool.bin : '(none)');
 
@@ -88,28 +107,32 @@ async function clipboardPasteKey(text: string) {
     log('clipboard.readText failed:', (e as Error).message);
   }
 
+  if (targetStillValid && !targetStillValid()) {
+    log('paste-key aborted: captured target changed before clipboard write');
+    return false;
+  }
   await writeClipboard(text);
 
   if (!tool) {
     notifyClip(text, '(no key tool)');
-    return;
+    return false;
   }
 
   // Simulated input is sent to the focused OS application. Do not risk
   // pasting a transcript into another app when VS Code has lost focus.
-  if (!vscode.window.state.focused) {
+  if (!vscode.window.state.focused || (targetStillValid && !targetStillValid())) {
     log('paste-key aborted: VS Code not focused');
     notifyClip(text, '(VS Code is not focused)');
-    return;
+    return false;
   }
 
   // Wait for clipboard manager to settle. Wayland sometimes needs >100ms.
   await new Promise((r) => setTimeout(r, 200));
 
-  if (!vscode.window.state.focused) {
+  if (!vscode.window.state.focused || (targetStillValid && !targetStillValid())) {
     log('paste-key aborted after clipboard wait: VS Code not focused');
     notifyClip(text, '(VS Code is not focused)');
-    return;
+    return false;
   }
 
   try {
@@ -119,6 +142,8 @@ async function clipboardPasteKey(text: string) {
       '$(check) Voice: pasted.',
       3000,
     );
+    setTimeout(() => void restoreClipboardIfUnchanged(prev, text), 1800);
+    return true;
   } catch (e) {
     const msg = (e as Error).message;
     log('paste-key failed:', msg);
@@ -126,9 +151,9 @@ async function clipboardPasteKey(text: string) {
       `$(error) Voice: paste failed (${msg.slice(0, 60)}). Ctrl+V to paste.`,
       6000,
     );
+    setTimeout(() => void restoreClipboardIfUnchanged(prev, text), 1800);
+    return false;
   }
-
-  setTimeout(() => void restoreClipboardIfUnchanged(prev, text), 1800);
 }
 
 async function directType(text: string) {

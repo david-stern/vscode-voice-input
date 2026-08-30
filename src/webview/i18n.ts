@@ -48,6 +48,36 @@ export interface Strings {
   assistantWakePhraseHint: string;
   assistantDisclosure: string;
   assistantDisclosureAcknowledge: string;
+  assistantPersona: string;
+  personaTeacher: string;
+  personaSecretary: string;
+  personaFriend: string;
+  personaTravelGuide: string;
+  personaMathematician: string;
+  personaPhilosopher: string;
+  deepSeek: string;
+  deepSeekReady: string;
+  deepSeekMissing: string;
+  deepSeekChecking: string;
+  deepSeekError: string;
+  deepSeekSetup: string;
+  speechResponse: string;
+  speechEnabled: string;
+  speechVoice: string;
+  speechSystemDefault: string;
+  speechNoVoices: string;
+  speechRate: string;
+  speechStop: string;
+  speechSpeaking: string;
+  speechIdle: string;
+  assistantTarget: string;
+  assistantTargetUnknown: string;
+  assistantPlanConfidence: string;
+  deepSeekDisclosure: string;
+  pendingSend: string;
+  pendingSendExplain: string;
+  pendingSendConfirm: string;
+  pendingSendCancel: string;
 }
 
 export const STRINGS: Record<UiLang, Strings> = {
@@ -99,6 +129,36 @@ export const STRINGS: Record<UiLang, Strings> = {
     assistantWakePhraseHint: 'למשל: היי עוזר',
     assistantDisclosure: 'כאשר העוזר הקולי מאזין, מקטעי דיבור שהושלמו נשלחים ל‑Soniox לתמלול. ביטוי ההפעלה נבדק לאחר התמלול; שקט נשאר מקומי.',
     assistantDisclosureAcknowledge: 'הבנתי',
+    assistantPersona: 'מצב העוזר',
+    personaTeacher: 'מורה / מרצה',
+    personaSecretary: 'מזכירה',
+    personaFriend: 'חבר',
+    personaTravelGuide: 'מדריך טיולים',
+    personaMathematician: 'מתמטיקאי',
+    personaPhilosopher: 'פילוסוף',
+    deepSeek: 'עיבוד חכם באמצעות DeepSeek',
+    deepSeekReady: 'DeepSeek מוגדר ומוכן',
+    deepSeekMissing: 'DeepSeek עדיין לא מוגדר',
+    deepSeekChecking: 'בודק את הגדרת DeepSeek…',
+    deepSeekError: 'לא ניתן להשתמש ב‑DeepSeek כרגע',
+    deepSeekSetup: 'הגדר DeepSeek',
+    speechResponse: 'תשובה קולית',
+    speechEnabled: 'העוזר יענה בקול',
+    speechVoice: 'קול',
+    speechSystemDefault: 'קול ברירת המחדל של המערכת',
+    speechNoVoices: 'לא נמצאו קולות במערכת',
+    speechRate: 'מהירות דיבור',
+    speechStop: 'הפסק דיבור',
+    speechSpeaking: 'העוזר מדבר כעת',
+    speechIdle: 'העוזר אינו מדבר',
+    assistantTarget: 'יעד הפעולה',
+    assistantTargetUnknown: 'עדיין לא זוהה יעד פעיל',
+    assistantPlanConfidence: 'ביטחון בתוכנית',
+    deepSeekDisclosure: 'DeepSeek אופציונלי. לאחר הסכמה נפרדת הוא מקבל רק את הבקשה שלאחר ביטוי ההפעלה, מצב העוזר, שפת הממשק ומידע יעד מינימלי. לא נשלחים צילום מסך, קבצים, בחירה, לוח, היסטוריית מסוף או היסטוריית צ׳אט.',
+    pendingSend: 'ממתין לאישור שליחה',
+    pendingSendExplain: 'העוזר הכין את הטקסט, אך לא ישלח אותו לפני אישורך.',
+    pendingSendConfirm: 'אשר ושלח',
+    pendingSendCancel: 'בטל',
   },
   en: {
     appTitle: 'Voice Input',
@@ -148,5 +208,35 @@ export const STRINGS: Record<UiLang, Strings> = {
     assistantWakePhraseHint: 'For example: Hey Assistant',
     assistantDisclosure: 'When the voice assistant is listening, completed speech segments are sent to Soniox for transcription. The wake phrase is checked after transcription; silence stays local.',
     assistantDisclosureAcknowledge: 'I understand',
+    assistantPersona: 'Assistant mode',
+    personaTeacher: 'Teacher / lecturer',
+    personaSecretary: 'Secretary',
+    personaFriend: 'Friend',
+    personaTravelGuide: 'Travel guide',
+    personaMathematician: 'Mathematician',
+    personaPhilosopher: 'Philosopher',
+    deepSeek: 'Smart processing with DeepSeek',
+    deepSeekReady: 'DeepSeek is configured and ready',
+    deepSeekMissing: 'DeepSeek is not configured yet',
+    deepSeekChecking: 'Checking the DeepSeek setup…',
+    deepSeekError: 'DeepSeek is currently unavailable',
+    deepSeekSetup: 'Set up DeepSeek',
+    speechResponse: 'Spoken response',
+    speechEnabled: 'Let the assistant answer aloud',
+    speechVoice: 'Voice',
+    speechSystemDefault: 'System default voice',
+    speechNoVoices: 'No system voices were found',
+    speechRate: 'Speaking rate',
+    speechStop: 'Stop speaking',
+    speechSpeaking: 'The assistant is speaking',
+    speechIdle: 'The assistant is not speaking',
+    assistantTarget: 'Action target',
+    assistantTargetUnknown: 'No active target has been detected yet',
+    assistantPlanConfidence: 'Plan confidence',
+    deepSeekDisclosure: 'DeepSeek is optional. After separate consent it receives only the post-wake request, assistant mode, UI language, and minimal target metadata. Screenshots, files, selections, clipboard, terminal history, and chat history are never sent.',
+    pendingSend: 'Waiting for send approval',
+    pendingSendExplain: 'The assistant prepared this text but will not send it without your approval.',
+    pendingSendConfirm: 'Approve and send',
+    pendingSendCancel: 'Cancel',
   },
 };

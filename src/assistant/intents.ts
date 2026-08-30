@@ -22,7 +22,9 @@ export type AssistantAction =
   | 'stop-listening'
   | 'open-chat'
   | 'open-terminal'
-  | 'open-settings';
+  | 'open-settings'
+  | 'confirm-send'
+  | 'repeat-last';
 
 export type AssistantIntent =
   | { kind: 'action'; action: AssistantAction }
@@ -81,6 +83,26 @@ const ACTION_PHRASES: Readonly<Record<AssistantAction, readonly string[]>> = {
     'פתח את ההגדרות',
     'פתחי הגדרות',
     'פתחי את ההגדרות',
+  ],
+  'confirm-send': [
+    'confirm send',
+    'send it',
+    'yes send',
+    'אשר שליחה',
+    'אשרי שליחה',
+    'כן שלח',
+    'כן שלחי',
+    'שלח עכשיו',
+    'שלחי עכשיו',
+  ],
+  'repeat-last': [
+    'repeat last',
+    'do that again',
+    'write that again',
+    'חזור על הפעולה',
+    'חזרי על הפעולה',
+    'כתוב שוב',
+    'כתבי שוב',
   ],
 };
 

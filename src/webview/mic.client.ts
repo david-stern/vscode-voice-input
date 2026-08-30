@@ -1,6 +1,21 @@
 // Webview UI: mic button, history list, collapsible settings.
 // All state comes from the extension host via postMessage.
 import { STRINGS, UiLang, Strings } from './i18n';
+import type {
+  DeepSeekStatus,
+  HostMessage,
+  PendingAssistantSend,
+} from './micView';
+import type { PersonaId } from '../assistant/personas';
+import {
+  DEFAULT_SPEECH_RATE,
+  SpeechQueue,
+  SpeechLifecycle,
+  continuesSpeakingAfterFinish,
+  normalizeSpeechRate,
+  resolveSpeakingState,
+  selectSpeechVoice,
+} from './speech';
 
 declare const acquireVsCodeApi: () => {
   postMessage: (msg: unknown) => void;
@@ -34,6 +49,17 @@ interface InitState {
   assistantListening?: boolean;
   assistantWakePhrase?: string;
   assistantDisclosureAcknowledged?: boolean;
+  assistantPersona?: PersonaId;
+  assistantDeepSeekStatus?: DeepSeekStatus;
+  assistantDeepSeekError?: string;
+  assistantSpeechEnabled?: boolean;
+  assistantSpeechVoiceUri?: string;
+  assistantSpeechRate?: number;
+  assistantSpeaking?: boolean;
+  assistantTargetLabel?: string;
+  assistantPlanConfidence?: number;
+  assistantPendingSend?: PendingAssistantSend;
+  assistantFeedback?: string;
 }
 
 const vscode = acquireVsCodeApi();
@@ -55,7 +81,18 @@ let state: InitState = {
   assistantListening: false,
   assistantWakePhrase: '',
   assistantDisclosureAcknowledged: false,
+  assistantPersona: 'teacher-lecturer',
+  assistantDeepSeekStatus: 'not-configured',
+  assistantSpeechEnabled: true,
+  assistantSpeechVoiceUri: '',
+  assistantSpeechRate: DEFAULT_SPEECH_RATE,
+  assistantSpeaking: false,
 };
+
+let availableVoices: SpeechSynthesisVoice[] = [];
+const speechQueue = new SpeechQueue();
+const speechLifecycle = new SpeechLifecycle();
+let hostStateInitialized = false;
 
 function t(): Strings {
   return STRINGS[state.uiLang];
@@ -88,6 +125,54 @@ function langFlag(lang: string): string {
   if (lang === 'he') return '🇮🇱';
   if (lang === 'en') return '🇺🇸';
   return '🌐';
+}
+
+function personaOptions(): { value: PersonaId; label: string }[] {
+  return [
+    { value: 'teacher-lecturer', label: t().personaTeacher },
+    { value: 'secretary', label: t().personaSecretary },
+    { value: 'friend', label: t().personaFriend },
+    { value: 'tour-guide', label: t().personaTravelGuide },
+    { value: 'mathematician', label: t().personaMathematician },
+    { value: 'philosopher', label: t().personaPhilosopher },
+  ];
+}
+
+function renderPersonaOptions(): string {
+  return personaOptions().map(({ value, label }) =>
+    `<option value="${value}" ${state.assistantPersona === value ? 'selected' : ''}>${escapeHtml(label)}</option>`,
+  ).join('');
+}
+
+function deepSeekStatusText(): string {
+  switch (state.assistantDeepSeekStatus) {
+    case 'ready': return t().deepSeekReady;
+    case 'checking': return t().deepSeekChecking;
+    case 'error': return state.assistantDeepSeekError || t().deepSeekError;
+    default: return t().deepSeekMissing;
+  }
+}
+
+function renderVoiceOptions(): string {
+  if (availableVoices.length === 0) {
+    return `<option value="">${escapeHtml(t().speechNoVoices)}</option>`;
+  }
+  const selected = selectSpeechVoice(
+    availableVoices,
+    state.assistantSpeechVoiceUri,
+    state.speechLang === 'auto' ? state.uiLang : state.speechLang,
+  );
+  return availableVoices.map((voice) => {
+    const isSelected = voice.voiceURI === selected?.voiceURI;
+    const suffix = voice.default ? ` — ${t().speechSystemDefault}` : '';
+    return `<option value="${escapeHtml(voice.voiceURI)}" ${isSelected ? 'selected' : ''}>${escapeHtml(`${voice.name} (${voice.lang})${suffix}`)}</option>`;
+  }).join('');
+}
+
+function confidencePercent(): number | undefined {
+  const confidence = state.assistantPlanConfidence;
+  if (typeof confidence !== 'number' || !Number.isFinite(confidence)) return undefined;
+  return Math.round(Math.min(1, Math.max(0, confidence)) * 100);
 }
 
 function render() {
@@ -139,12 +224,69 @@ function render() {
           ? t().assistantListening
           : state.assistantEnabled ? t().assistantReady : t().assistantDisabled)}
       </p>
+      ${state.assistantFeedback ? `<p class="assistant-feedback" role="status" aria-live="polite" dir="auto">${escapeHtml(state.assistantFeedback)}</p>` : ''}
       <label class="assistant-field" for="assistant-wake-phrase">
         <span>${escapeHtml(t().assistantWakePhrase)}</span>
         <input id="assistant-wake-phrase" type="text" value="${escapeHtml(state.assistantWakePhrase ?? '')}"
           placeholder="${escapeHtml(t().assistantWakePhraseHint)}" autocomplete="off" spellcheck="false"
           ${state.assistantEnabled ? '' : 'disabled'} />
       </label>
+      <label class="assistant-field" for="assistant-persona">
+        <span>${escapeHtml(t().assistantPersona)}</span>
+        <select id="assistant-persona">${renderPersonaOptions()}</select>
+      </label>
+      <div class="assistant-subsection" aria-labelledby="deepseek-heading">
+        <div class="assistant-row">
+          <span id="deepseek-heading" class="field-label">${escapeHtml(t().deepSeek)}</span>
+          <button id="assistant-deepseek-setup" class="btn-ghost" type="button">${escapeHtml(t().deepSeekSetup)}</button>
+        </div>
+        <p class="subtle-status ${state.assistantDeepSeekStatus === 'error' ? 'error' : ''}" role="status" aria-live="polite">
+          ${escapeHtml(deepSeekStatusText())}
+        </p>
+        <p class="subtle-status" role="note">${escapeHtml(t().deepSeekDisclosure)}</p>
+      </div>
+      <div class="assistant-subsection" aria-labelledby="speech-heading">
+        <div class="assistant-row">
+          <span id="speech-heading" class="field-label">${escapeHtml(t().speechResponse)}</span>
+          <button id="assistant-stop-speaking" class="btn-ghost" type="button"
+            ${state.assistantSpeaking ? '' : 'disabled'}>${escapeHtml(t().speechStop)}</button>
+        </div>
+        <label class="check-row" for="assistant-speech-enabled">
+          <input id="assistant-speech-enabled" type="checkbox" ${state.assistantSpeechEnabled ? 'checked' : ''} />
+          <span>${escapeHtml(t().speechEnabled)}</span>
+        </label>
+        <label class="assistant-field" for="assistant-speech-voice">
+          <span>${escapeHtml(t().speechVoice)}</span>
+          <select id="assistant-speech-voice" ${state.assistantSpeechEnabled && availableVoices.length ? '' : 'disabled'}>
+            ${renderVoiceOptions()}
+          </select>
+        </label>
+        <label class="assistant-field" for="assistant-speech-rate">
+          <span>${escapeHtml(t().speechRate)}: <output id="assistant-speech-rate-value">${normalizeSpeechRate(state.assistantSpeechRate).toFixed(1)}×</output></span>
+          <input id="assistant-speech-rate" type="range" min="0.5" max="2" step="0.1"
+            value="${normalizeSpeechRate(state.assistantSpeechRate)}" ${state.assistantSpeechEnabled ? '' : 'disabled'} />
+        </label>
+        <p class="subtle-status" role="status" aria-live="polite">
+          ${escapeHtml(state.assistantSpeaking ? t().speechSpeaking : t().speechIdle)}
+        </p>
+      </div>
+      <div class="assistant-target" role="status" aria-live="polite">
+        <span class="field-label">${escapeHtml(t().assistantTarget)}</span>
+        <span dir="auto">${escapeHtml(state.assistantTargetLabel || t().assistantTargetUnknown)}</span>
+        ${confidencePercent() === undefined ? '' : `
+          <span class="confidence-label">${escapeHtml(t().assistantPlanConfidence)}: ${confidencePercent()}%</span>
+          <progress max="100" value="${confidencePercent()}" aria-label="${escapeHtml(t().assistantPlanConfidence)}"></progress>`}
+      </div>
+      ${state.assistantPendingSend ? `
+        <div class="pending-send" role="alert" aria-labelledby="pending-send-heading">
+          <strong id="pending-send-heading">${escapeHtml(t().pendingSend)}</strong>
+          <p>${escapeHtml(t().pendingSendExplain)}</p>
+          <blockquote dir="auto">${escapeHtml(state.assistantPendingSend.preview)}</blockquote>
+          <div class="actions-row">
+            <button id="assistant-pending-confirm" class="btn" type="button">${escapeHtml(t().pendingSendConfirm)}</button>
+            <button id="assistant-pending-cancel" class="btn-ghost" type="button">${escapeHtml(t().pendingSendCancel)}</button>
+          </div>
+        </div>` : ''}
       ${state.assistantDisclosureAcknowledged ? '' : `
         <div class="assistant-disclosure" role="note">
           <p>${escapeHtml(t().assistantDisclosure)}</p>
@@ -364,6 +506,45 @@ function attachHandlers() {
     vscode.postMessage({ type: 'assistant-disclosure-acknowledged' });
     render();
   });
+  document.getElementById('assistant-persona')?.addEventListener('change', (e) => {
+    state.assistantPersona = (e.target as HTMLSelectElement).value as PersonaId;
+    vscode.postMessage({ type: 'assistant-persona-change', persona: state.assistantPersona });
+  });
+  document.getElementById('assistant-deepseek-setup')?.addEventListener('click', () => {
+    vscode.postMessage({ type: 'assistant-deepseek-setup' });
+  });
+  document.getElementById('assistant-speech-enabled')?.addEventListener('change', (e) => {
+    state.assistantSpeechEnabled = (e.target as HTMLInputElement).checked;
+    if (!state.assistantSpeechEnabled) cancelSpeech();
+    pushSpeechSettings();
+    render();
+  });
+  document.getElementById('assistant-speech-voice')?.addEventListener('change', (e) => {
+    state.assistantSpeechVoiceUri = (e.target as HTMLSelectElement).value;
+    pushSpeechSettings();
+  });
+  document.getElementById('assistant-speech-rate')?.addEventListener('input', (e) => {
+    state.assistantSpeechRate = normalizeSpeechRate((e.target as HTMLInputElement).value);
+    const output = document.getElementById('assistant-speech-rate-value');
+    if (output) output.textContent = `${state.assistantSpeechRate.toFixed(1)}×`;
+  });
+  document.getElementById('assistant-speech-rate')?.addEventListener('change', () => {
+    pushSpeechSettings();
+  });
+  document.getElementById('assistant-stop-speaking')?.addEventListener('click', () => {
+    cancelSpeech();
+    vscode.postMessage({ type: 'assistant-stop-speaking' });
+  });
+  document.getElementById('assistant-pending-confirm')?.addEventListener('click', () => {
+    if (state.assistantPendingSend) {
+      vscode.postMessage({ type: 'assistant-pending-send-confirm', id: state.assistantPendingSend.id });
+    }
+  });
+  document.getElementById('assistant-pending-cancel')?.addEventListener('click', () => {
+    if (state.assistantPendingSend) {
+      vscode.postMessage({ type: 'assistant-pending-send-cancel', id: state.assistantPendingSend.id });
+    }
+  });
 }
 
 function flashLabel(btn: HTMLButtonElement, text: string) {
@@ -386,10 +567,129 @@ function pushSettings() {
   });
 }
 
+function pushSpeechSettings() {
+  state.assistantSpeechRate = normalizeSpeechRate(state.assistantSpeechRate);
+  vscode.postMessage({
+    type: 'assistant-speech-settings-change',
+    enabled: !!state.assistantSpeechEnabled,
+    voiceUri: state.assistantSpeechVoiceUri,
+    rate: state.assistantSpeechRate,
+  });
+}
+
+function finishSpeech(
+  id: string,
+  outcome: 'completed' | 'cancelled' | 'error' | 'unavailable' | 'queue-full',
+  generation: number,
+) {
+  if (!speechLifecycle.finish(id, generation)) return;
+  const continues = continuesSpeakingAfterFinish(
+    state.assistantSpeechEnabled,
+    speechQueue.length,
+  );
+  state.assistantSpeaking = continues;
+  vscode.postMessage({ type: 'assistant-speech-finished', id, outcome });
+  if (continues) drainSpeechQueue();
+  else render();
+}
+
+function drainSpeechQueue() {
+  if (!hostStateInitialized || speechLifecycle.activeId || !state.assistantSpeechEnabled) return;
+  const item = speechQueue.take();
+  if (!item) {
+    state.assistantSpeaking = false;
+    render();
+    return;
+  }
+
+  if (typeof window.speechSynthesis === 'undefined' || typeof SpeechSynthesisUtterance === 'undefined') {
+    vscode.postMessage({ type: 'assistant-speech-finished', id: item.id, outcome: 'unavailable' });
+    drainSpeechQueue();
+    return;
+  }
+
+  let generation: number | undefined;
+  try {
+    const utterance = new SpeechSynthesisUtterance(item.text);
+    const voice = selectSpeechVoice(
+      availableVoices,
+      state.assistantSpeechVoiceUri,
+      item.lang || (state.speechLang === 'auto' ? state.uiLang : state.speechLang),
+    );
+    if (voice) {
+      utterance.voice = voice;
+      utterance.lang = voice.lang;
+    } else if (item.lang) {
+      utterance.lang = item.lang;
+    }
+    utterance.rate = normalizeSpeechRate(state.assistantSpeechRate);
+    generation = speechLifecycle.start(item.id);
+    if (generation === undefined) {
+      vscode.postMessage({ type: 'assistant-speech-finished', id: item.id, outcome: 'error' });
+      return;
+    }
+    state.assistantSpeaking = true;
+    vscode.postMessage({ type: 'assistant-speech-started', id: item.id });
+    utterance.onend = () => {
+      finishSpeech(item.id, 'completed', generation);
+    };
+    utterance.onerror = () => {
+      finishSpeech(item.id, 'error', generation);
+    };
+    render();
+    window.speechSynthesis.speak(utterance);
+  } catch {
+    if (generation !== undefined) speechLifecycle.finish(item.id, generation);
+    state.assistantSpeaking = false;
+    vscode.postMessage({ type: 'assistant-speech-finished', id: item.id, outcome: 'error' });
+    drainSpeechQueue();
+  }
+}
+
+function enqueueSpeech(id: string, text: string, lang?: string) {
+  if (!hostStateInitialized || !state.assistantSpeechEnabled) {
+    vscode.postMessage({ type: 'assistant-speech-finished', id, outcome: 'unavailable' });
+    return;
+  }
+  if (!speechQueue.enqueue({ id, text, lang })) {
+    vscode.postMessage({ type: 'assistant-speech-finished', id, outcome: 'queue-full' });
+    return;
+  }
+  drainSpeechQueue();
+}
+
+function cancelSpeech() {
+  const pending = speechQueue.cancel();
+  for (const item of pending) {
+    vscode.postMessage({ type: 'assistant-speech-finished', id: item.id, outcome: 'cancelled' });
+  }
+  const current = speechLifecycle.cancel();
+  state.assistantSpeaking = false;
+  window.speechSynthesis?.cancel();
+  if (current) {
+    vscode.postMessage({ type: 'assistant-speech-finished', id: current, outcome: 'cancelled' });
+  }
+  render();
+}
+
+function refreshVoices() {
+  if (typeof window.speechSynthesis === 'undefined') return;
+  availableVoices = window.speechSynthesis.getVoices();
+  render();
+}
+
 window.addEventListener('message', (e) => {
-  const msg = e.data;
+  const msg = e.data as HostMessage | { type: 'init'; payload: InitState };
   if (msg?.type === 'init' || msg?.type === 'state') {
+    const wasEnabled = hostStateInitialized && !!state.assistantSpeechEnabled;
     state = { ...state, ...msg.payload };
+    state.assistantSpeaking = resolveSpeakingState(
+      state.assistantSpeaking,
+      speechLifecycle.activeId,
+    );
+    hostStateInitialized = true;
+    if (wasEnabled && !state.assistantSpeechEnabled) cancelSpeech();
+    else if (!wasEnabled && state.assistantSpeechEnabled) drainSpeechQueue();
     render();
   } else if (msg?.type === 'recording-state') {
     state.recording = !!msg.recording;
@@ -403,6 +703,10 @@ window.addEventListener('message', (e) => {
     state.metaLoading = !!msg.loading;
     state.metaError = msg.error;
     render();
+  } else if (msg?.type === 'speak') {
+    enqueueSpeech(msg.id, msg.text, msg.lang);
+  } else if (msg?.type === 'cancel-speaking') {
+    cancelSpeech();
   }
 });
 
@@ -434,5 +738,9 @@ document.addEventListener('keyup', (e: KeyboardEvent) => {
 
 document.addEventListener('DOMContentLoaded', () => {
   render();
+  if (typeof window.speechSynthesis !== 'undefined') {
+    refreshVoices();
+    window.speechSynthesis.addEventListener('voiceschanged', refreshVoices);
+  }
   vscode.postMessage({ type: 'ready' });
 });

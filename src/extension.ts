@@ -3,7 +3,12 @@ import { spawn } from 'child_process';
 import { existsSync } from 'fs';
 import { MicViewProvider, ViewState, WebviewMessage } from './webview/micView';
 import { transcribe } from './stt/soniox';
-import { injectText, InjectionMode } from './inject';
+import {
+  injectText,
+  injectIntoEditor,
+  injectIntoFocusedControl,
+  InjectionMode,
+} from './inject';
 import {
   startRecorder,
   startPcmStream,
@@ -20,6 +25,33 @@ import {
   VadSegmenter,
   parseAssistantText,
 } from './assistant';
+import {
+  captureTargetSnapshot,
+  revalidateTargetSnapshot,
+  type RequestedTargetKind,
+  type ResolvedTargetKind,
+  type TargetSnapshot,
+} from './assistant/context';
+import {
+  DEFAULT_DEEPSEEK_MODEL,
+  DeepSeekClientError,
+  planWithDeepSeek,
+  type DeepSeekPlan,
+} from './assistant/deepseek';
+import { normalizePersonaId, type PersonaId } from './assistant/personas';
+import {
+  BUILTIN_CHAT_FOCUS_COMMAND,
+  BUILTIN_CHAT_OPEN_COMMAND,
+  BUILTIN_CHAT_SUBMIT_COMMAND,
+  builtInChatDraftArguments,
+} from './assistant/chat';
+import {
+  SafeActionPolicy,
+  insertTerminalText,
+  type PolicyExplanation,
+  type RepeatedAction,
+} from './assistant/policy';
+import { feedbackSpeechLanguage, normalizeSpeechRate } from './webview/speech';
 import { HistoryStore } from './history';
 import { UiLang } from './webview/i18n';
 import { log, show as showLog } from './log';
@@ -33,7 +65,9 @@ import {
 } from './sonioxMeta';
 
 const SECRET_KEY = 'SONIOX_API_KEY';
+const DEEPSEEK_SECRET_KEY = 'DEEPSEEK_API_KEY';
 const ASSISTANT_CONSENT_KEY = 'voiceInput.assistantDisclosureAcknowledged.v1';
+const DEEPSEEK_CONSENT_KEY = 'voiceInput.deepSeekDisclosureAcknowledged.v1';
 
 interface Settings {
   speechLang: string;
@@ -42,6 +76,11 @@ interface Settings {
   model: string;
   injectionMode: InjectionMode;
   assistantWakePhrase: string;
+  assistantPersona: PersonaId;
+  deepSeekModel: string;
+  assistantSpeechEnabled: boolean;
+  assistantSpeechVoiceUri: string;
+  assistantSpeechRate: number;
 }
 
 function readSettings(): Settings {
@@ -53,6 +92,11 @@ function readSettings(): Settings {
     model: cfg.get<string>('sttModel', 'stt-async-v4'),
     injectionMode: cfg.get<InjectionMode>('injectionMode', 'auto'),
     assistantWakePhrase: cfg.get<string>('assistantWakePhrase', '').trim(),
+    assistantPersona: normalizePersonaId(cfg.get<string>('assistantPersona')),
+    deepSeekModel: cfg.get<string>('deepSeekModel', DEFAULT_DEEPSEEK_MODEL).trim() || DEFAULT_DEEPSEEK_MODEL,
+    assistantSpeechEnabled: cfg.get<boolean>('assistantSpeechEnabled', true),
+    assistantSpeechVoiceUri: cfg.get<string>('assistantSpeechVoiceUri', '').trim(),
+    assistantSpeechRate: normalizeSpeechRate(cfg.get<number>('assistantSpeechRate', 1)),
   };
 }
 
@@ -66,6 +110,22 @@ async function writeSettings(partial: Partial<Settings>) {
     await cfg.update('sttModel', partial.model, target);
   if (partial.assistantWakePhrase !== undefined)
     await cfg.update('assistantWakePhrase', partial.assistantWakePhrase.trim(), target);
+  if (partial.assistantPersona !== undefined)
+    await cfg.update('assistantPersona', normalizePersonaId(partial.assistantPersona), target);
+  if (partial.deepSeekModel !== undefined && partial.deepSeekModel.trim())
+    await cfg.update('deepSeekModel', partial.deepSeekModel.trim(), target);
+  if (partial.assistantSpeechEnabled !== undefined)
+    await cfg.update('assistantSpeechEnabled', partial.assistantSpeechEnabled, target);
+  if (partial.assistantSpeechVoiceUri !== undefined)
+    await cfg.update('assistantSpeechVoiceUri', partial.assistantSpeechVoiceUri.trim(), target);
+  if (partial.assistantSpeechRate !== undefined)
+    await cfg.update('assistantSpeechRate', normalizeSpeechRate(partial.assistantSpeechRate), target);
+}
+
+interface CapturedAssistantUtterance {
+  utterance: SegmentedUtterance;
+  snapshot: TargetSnapshot;
+  id: string;
 }
 
 interface MetaCache {
@@ -152,11 +212,76 @@ export async function activate(context: vscode.ExtensionContext) {
   let assistantVad: VadSegmenter | null = null;
   let assistantRestartTimer: NodeJS.Timeout | null = null;
   let assistantTranscriptionActive = false;
-  let assistantQueuedUtterance: SegmentedUtterance | null = null;
+  let assistantQueuedUtterance: CapturedAssistantUtterance | null = null;
+  let assistantUtteranceSequence = 0;
+  let assistantSpeaking = false;
+  let assistantTargetLabel = '';
+  let assistantPlanConfidence: number | undefined;
+  let assistantPendingSend: ViewState['assistantPendingSend'];
+  let pendingChatDraft: { id: string; text: string; snapshot: TargetSnapshot } | undefined;
+  let assistantFeedback = '';
+  let deepSeekBusy = false;
+  let deepSeekLastError: string | undefined;
+  let assistantPendingSendTimer: NodeJS.Timeout | null = null;
+  let intentionalTargetTransition = 0;
+  const actionPolicy = new SafeActionPolicy();
+  const terminalIdentities = new WeakMap<vscode.Terminal, string>();
+  let nextTerminalIdentity = 1;
   let deactivating = false;
   const activeTranscriptions = new Set<AbortController>();
   const assistantTranscriptions = new Set<AbortController>();
   const pushToTalkTranscriptions = new Set<AbortController>();
+
+  function terminalIdentity(terminal: vscode.Terminal | undefined): string | null {
+    if (!terminal) return null;
+    let identity = terminalIdentities.get(terminal);
+    if (!identity) {
+      identity = `terminal-${nextTerminalIdentity++}`;
+      terminalIdentities.set(terminal, identity);
+    }
+    return identity;
+  }
+
+  function activeTabIdentity(): string | null {
+    const tab = vscode.window.tabGroups.activeTabGroup.activeTab;
+    if (!tab) return null;
+    const input = tab.input;
+    if (input instanceof vscode.TabInputText) return `text:${input.uri.toString(true)}`;
+    if (input instanceof vscode.TabInputTextDiff) {
+      return `diff:${input.original.toString(true)}:${input.modified.toString(true)}`;
+    }
+    if (input instanceof vscode.TabInputNotebook) return `notebook:${input.uri.toString(true)}`;
+    const inputType = typeof input === 'object' && input !== null
+      ? (input as { constructor?: { name?: string } }).constructor?.name ?? 'unknown'
+      : typeof input;
+    return `${inputType}:${tab.label}`.slice(0, 512);
+  }
+
+  function editorIdentity(editor = vscode.window.activeTextEditor): string | null {
+    if (!editor) return null;
+    return `${editor.document.uri.toString(true)}:${editor.viewColumn ?? 0}`;
+  }
+
+  function captureAssistantTarget(
+    requestedTarget: RequestedTargetKind = 'here',
+    provenFocus: Exclude<ResolvedTargetKind, 'unknown'> | null = null,
+  ): TargetSnapshot {
+    return captureTargetSnapshot({
+      requestedTarget,
+      focusedTarget: provenFocus,
+      vscodeFocused: vscode.window.state.focused,
+      activeTabIdentity: activeTabIdentity(),
+      activeEditorIdentity: editorIdentity(),
+      activeTerminalIdentity: terminalIdentity(vscode.window.activeTerminal),
+    });
+  }
+
+  function snapshotForRequestedTarget(
+    snapshot: TargetSnapshot,
+    requestedTarget: Exclude<RequestedTargetKind, 'here'>,
+  ): TargetSnapshot {
+    return { ...snapshot, requestedTarget, resolvedTarget: requestedTarget };
+  }
 
   // ── Device list cache ──────────────────────────────────────────────────────
   let deviceCache: { devices: AudioDevice[]; ts: number } | null = null;
@@ -237,6 +362,7 @@ export async function activate(context: vscode.ExtensionContext) {
   async function pushFullState() {
     const s = readSettings();
     const entries = await history.list(s.ttlDays);
+    const deepSeekKey = await context.secrets.get(DEEPSEEK_SECRET_KEY);
     const audioDevice = vscode.workspace.getConfiguration('voiceInput').get<string>('audioDevice', '');
     const view: ViewState = {
       uiLang: s.uiLang,
@@ -256,6 +382,20 @@ export async function activate(context: vscode.ExtensionContext) {
       assistantListening,
       assistantWakePhrase: s.assistantWakePhrase,
       assistantDisclosureAcknowledged: context.globalState.get<boolean>(ASSISTANT_CONSENT_KEY, false),
+      assistantPersona: s.assistantPersona,
+      assistantDeepSeekStatus: deepSeekBusy ? 'checking'
+        : deepSeekLastError ? 'error'
+        : deepSeekKey && context.globalState.get<boolean>(DEEPSEEK_CONSENT_KEY, false) ? 'ready'
+        : 'not-configured',
+      assistantDeepSeekError: deepSeekLastError,
+      assistantSpeechEnabled: s.assistantSpeechEnabled,
+      assistantSpeechVoiceUri: s.assistantSpeechVoiceUri,
+      assistantSpeechRate: s.assistantSpeechRate,
+      assistantSpeaking,
+      assistantTargetLabel,
+      assistantPlanConfidence,
+      assistantPendingSend,
+      assistantFeedback,
     };
     provider.postState(view);
   }
@@ -264,6 +404,489 @@ export async function activate(context: vscode.ExtensionContext) {
     const s = readSettings();
     const entries = await history.list(s.ttlDays);
     provider.postHistory(entries);
+  }
+
+  function localeText(en: string, he: string): string {
+    return readSettings().uiLang === 'he' ? he : en;
+  }
+
+  function targetLabel(target: ResolvedTargetKind): string {
+    const labels: Record<ResolvedTargetKind, [string, string]> = {
+      'focused-control': ['Focused VS Code control', 'הרכיב הממוקד ב־VS Code'],
+      editor: ['Active editor', 'העורך הפעיל'],
+      terminal: ['Active terminal', 'המסוף הפעיל'],
+      chat: ['Built-in VS Code chat', 'הצ׳אט המובנה של VS Code'],
+      unknown: ['Unknown target', 'יעד לא ידוע'],
+    };
+    const [en, he] = labels[target];
+    return localeText(en, he);
+  }
+
+  function speakFeedback(text: string): void {
+    const bounded = text.trim().slice(0, 1_000);
+    if (!bounded) return;
+    assistantFeedback = bounded;
+    status.tooltip = bounded;
+    vscode.window.setStatusBarMessage(`$(comment-discussion) Voice: ${bounded}`, 8_000);
+    const s = readSettings();
+    void pushFullState();
+    if (!s.assistantSpeechEnabled) return;
+    const id = `speech-${Date.now()}-${++assistantUtteranceSequence}`;
+    const delivery = provider.postSpeak(id, bounded, feedbackSpeechLanguage(s.uiLang));
+    assistantSpeaking = delivery !== 'unavailable';
+    if (delivery === 'unavailable') {
+      log('assistant speech unavailable: sidebar view queue is full or disposed');
+    }
+  }
+
+  function explainPolicy(explanation: PolicyExplanation): void {
+    speakFeedback(readSettings().uiLang === 'he' ? explanation.he : explanation.en);
+  }
+
+  function clearPendingSend(announce = false): void {
+    if (assistantPendingSendTimer) clearTimeout(assistantPendingSendTimer);
+    assistantPendingSendTimer = null;
+    if (!assistantPendingSend) return;
+    assistantPendingSend = undefined;
+    pendingChatDraft = undefined;
+    actionPolicy.cancelPendingSend();
+    if (announce) {
+      speakFeedback(localeText('I cancelled the pending send.', 'ביטלתי את השליחה הממתינה.'));
+    }
+    void pushFullState();
+  }
+
+  async function focusBuiltInChat(targetStillValid: () => boolean): Promise<boolean> {
+    const commands = await vscode.commands.getCommands(true);
+    if (!commands.includes(BUILTIN_CHAT_OPEN_COMMAND)) {
+      throw new Error('The built-in VS Code chat focus command is unavailable.');
+    }
+    if (!targetStillValid()) return false;
+    intentionalTargetTransition += 1;
+    try {
+      await vscode.commands.executeCommand(BUILTIN_CHAT_OPEN_COMMAND);
+      if (commands.includes(BUILTIN_CHAT_FOCUS_COMMAND)) {
+        await vscode.commands.executeCommand(BUILTIN_CHAT_FOCUS_COMMAND);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    } finally {
+      intentionalTargetTransition -= 1;
+    }
+    return true;
+  }
+
+  async function prepareBuiltInChatDraft(
+    text: string,
+    targetStillValid: () => boolean,
+  ): Promise<TargetSnapshot | undefined> {
+    const commands = await vscode.commands.getCommands(true);
+    if (!commands.includes(BUILTIN_CHAT_OPEN_COMMAND)) {
+      throw new Error('The built-in VS Code chat draft command is unavailable.');
+    }
+    // Command discovery is asynchronous. Revalidate immediately before the
+    // supported mutation command, not only before entering this helper.
+    if (!targetStillValid()) return undefined;
+    intentionalTargetTransition += 1;
+    try {
+      await vscode.commands.executeCommand(
+        BUILTIN_CHAT_OPEN_COMMAND,
+        builtInChatDraftArguments(text),
+      );
+      if (commands.includes(BUILTIN_CHAT_FOCUS_COMMAND)) {
+        await vscode.commands.executeCommand(BUILTIN_CHAT_FOCUS_COMMAND);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 120));
+    } finally {
+      intentionalTargetTransition -= 1;
+    }
+    // This is a generic VS Code snapshot. Command success proves that the
+    // documented API prepared a draft; it does not prove third-party DOM focus.
+    return captureAssistantTarget();
+  }
+
+  function deterministicPlan(
+    postWakeText: string,
+    intent: Exclude<ReturnType<typeof parseAssistantText>, { wakeDetected: false }>['intent'],
+  ): DeepSeekPlan {
+    if (intent.kind === 'paste') {
+      return {
+        action: 'write-here', target: 'current', content: postWakeText,
+        spokenReply: '',
+        reason: localeText('You asked me to write in the focused control.', 'ביקשת ממני לכתוב ברכיב הממוקד.'),
+        confidence: 1,
+        requiresConfirmation: false,
+      };
+    }
+    return {
+      action: intent.action,
+      target: intent.action === 'open-chat' ? 'chat'
+        : intent.action === 'open-terminal' ? 'terminal'
+        : intent.action === 'confirm-send' || intent.action === 'repeat-last' ? 'current'
+        : 'none',
+      content: null,
+      spokenReply: '',
+      reason: localeText('This is an explicit supported voice command.', 'זו פקודה קולית מפורשת ונתמכת.'),
+      confidence: 1,
+      requiresConfirmation: false,
+    };
+  }
+
+  async function createAssistantPlan(
+    postWakeRequest: string,
+    snapshot: TargetSnapshot,
+    signal: AbortSignal,
+    fallbackPlan: DeepSeekPlan,
+  ): Promise<DeepSeekPlan> {
+    if (!postWakeRequest.trim()) {
+      return {
+        action: 'answer-only', target: 'none', content: null,
+        spokenReply: localeText('I am listening. What would you like me to do?', 'אני מקשיב. מה תרצה שאעשה?'),
+        reason: localeText('No request followed the wake phrase.', 'לא נאמרה בקשה לאחר ביטוי ההפעלה.'),
+        confidence: 1,
+        requiresConfirmation: false,
+      };
+    }
+    const apiKey = await context.secrets.get(DEEPSEEK_SECRET_KEY);
+    const consent = context.globalState.get<boolean>(DEEPSEEK_CONSENT_KEY, false);
+    if (!apiKey || !consent) return fallbackPlan;
+    const s = readSettings();
+    deepSeekBusy = true;
+    deepSeekLastError = undefined;
+    void pushFullState();
+    try {
+      return await planWithDeepSeek({
+        postWakeRequest,
+        persona: s.assistantPersona,
+        locale: s.uiLang,
+        target: { kind: snapshot.resolvedTarget, vscodeFocused: snapshot.vscodeFocused },
+      }, {
+        apiKey,
+        model: s.deepSeekModel,
+        signal,
+        logger: (event) => log('DeepSeek planner:', event),
+      });
+    } catch (error) {
+      deepSeekLastError = localeText('Planning request failed safely.', 'בקשת התכנון נכשלה באופן בטוח.');
+      throw error;
+    } finally {
+      deepSeekBusy = false;
+      void pushFullState();
+    }
+  }
+
+  function successfulFeedback(plan: DeepSeekPlan, outcome: string): string {
+    const reason = plan.reason.trim();
+    return reason ? `${outcome} ${reason}` : outcome;
+  }
+
+  function originalTargetStillValid(captured: TargetSnapshot): boolean {
+    const validation = revalidateTargetSnapshot(captured, captureAssistantTarget());
+    if (validation.valid) return true;
+    explainPolicy({
+      code: validation.reason,
+      en: `I stopped because the original target is no longer safe (${validation.reason}).`,
+      he: `עצרתי מפני שהיעד המקורי כבר אינו בטוח (${validation.reason}).`,
+    });
+    return false;
+  }
+
+  async function executeRepeatedAction(
+    repeated: RepeatedAction,
+    utteranceId: string,
+  ): Promise<void> {
+    const plan: DeepSeekPlan = {
+      action: repeated.action,
+      target: repeated.action === 'write-editor' ? 'editor'
+        : repeated.action === 'write-terminal' ? 'terminal'
+        : repeated.action === 'write-chat' ? 'chat'
+        : repeated.action === 'write-here' ? 'current'
+        : repeated.action === 'open-chat' ? 'chat'
+        : repeated.action === 'open-terminal' ? 'terminal'
+        : 'none',
+      content: repeated.text ?? null,
+      spokenReply: '',
+      reason: localeText('I repeated the recent action on the current target.', 'חזרתי על הפעולה האחרונה ביעד הנוכחי.'),
+      confidence: 1,
+      requiresConfirmation: false,
+    };
+    await executeAssistantPlan(plan, repeated.snapshot, utteranceId, false);
+  }
+
+  async function executeAssistantPlan(
+    plan: DeepSeekPlan,
+    captured: TargetSnapshot,
+    utteranceId: string,
+    remember = true,
+  ): Promise<void> {
+    assistantPlanConfidence = plan.confidence;
+    const currentTarget = plan.action === 'write-editor' ? 'editor'
+      : plan.action === 'write-terminal' ? 'terminal'
+      : plan.action === 'write-chat' || plan.action === 'request-send' ? 'chat'
+      : captured.resolvedTarget;
+    assistantTargetLabel = targetLabel(currentTarget);
+    void pushFullState();
+
+    if (plan.action !== 'confirm-send' && assistantPendingSend) clearPendingSend(false);
+
+    if (plan.action === 'answer-only') {
+      if (plan.spokenReply) speakFeedback(plan.spokenReply);
+      return;
+    }
+    if (plan.action === 'stop-listening') {
+      speakFeedback(localeText('I am stopping the assistant because you asked me to.', 'אני מפסיק את העוזר מפני שביקשת ממני.'));
+      await stopAssistantSession();
+      return;
+    }
+    if (plan.action === 'open-chat') {
+      if (!originalTargetStillValid(captured)) return;
+      if (!(await focusBuiltInChat(() => originalTargetStillValid(captured)))) return;
+      speakFeedback(successfulFeedback(plan, localeText('I opened the built-in chat.', 'פתחתי את הצ׳אט המובנה.')));
+      if (remember) actionPolicy.rememberLast({ action: 'open-chat' });
+      return;
+    }
+    if (plan.action === 'open-terminal') {
+      if (!originalTargetStillValid(captured)) return;
+      await vscode.commands.executeCommand('workbench.action.terminal.toggleTerminal');
+      speakFeedback(successfulFeedback(plan, localeText('I opened the terminal.', 'פתחתי את המסוף.')));
+      if (remember) actionPolicy.rememberLast({ action: 'open-terminal' });
+      return;
+    }
+    if (plan.action === 'open-settings') {
+      if (!originalTargetStillValid(captured)) return;
+      await vscode.commands.executeCommand('workbench.action.openSettings', 'voiceInput');
+      speakFeedback(successfulFeedback(plan, localeText('I opened Voice Input settings.', 'פתחתי את הגדרות Voice Input.')));
+      if (remember) actionPolicy.rememberLast({ action: 'open-settings' });
+      return;
+    }
+    if (plan.action === 'repeat-last') {
+      // The repeat command itself must still belong to the context in which it
+      // was spoken. Only after that check do we intentionally re-resolve the
+      // destination for the remembered action.
+      if (!originalTargetStillValid(captured)) return;
+      const repeated = actionPolicy.repeatLast(captureAssistantTarget());
+      if (!repeated.allowed) explainPolicy(repeated.explanation);
+      else await executeRepeatedAction(repeated.instruction, utteranceId);
+      return;
+    }
+    if (plan.action === 'confirm-send') {
+      if (!assistantPendingSend || !pendingChatDraft || pendingChatDraft.id !== assistantPendingSend.id) {
+        const noPending = actionPolicy.confirmSend(captureAssistantTarget(), utteranceId);
+        if (!noPending.allowed) explainPolicy(noPending.explanation);
+        return;
+      }
+      const pendingState = assistantPendingSend;
+      const draft = pendingChatDraft;
+      const pendingStillMatches = () =>
+        assistantPendingSend?.id === pendingState.id &&
+        pendingChatDraft === draft &&
+        actionPolicy.getPendingSend() !== null;
+      const bothCapturedContextsMatch = (current: TargetSnapshot) =>
+        revalidateTargetSnapshot(captured, current).valid &&
+        revalidateTargetSnapshot(draft.snapshot, current).valid;
+      if (!pendingStillMatches() || !bothCapturedContextsMatch(captureAssistantTarget())) {
+        clearPendingSend(false);
+        speakFeedback(localeText(
+          'I did not send because the draft context changed or the confirmation expired.',
+          'לא שלחתי מפני שהקשר הטיוטה השתנה או שחלון האישור פג.',
+        ));
+        return;
+      }
+      const prepared = await prepareBuiltInChatDraft(draft.text, () =>
+        pendingStillMatches() && bothCapturedContextsMatch(captureAssistantTarget()),
+      );
+      if (!prepared) {
+        clearPendingSend(false);
+        speakFeedback(localeText(
+          'I did not send because the confirmation target changed.',
+          'לא שלחתי מפני שיעד האישור השתנה.',
+        ));
+        return;
+      }
+      const commands = await vscode.commands.getCommands(true);
+      if (!commands.includes(BUILTIN_CHAT_SUBMIT_COMMAND)) {
+        clearPendingSend(false);
+        speakFeedback(localeText(
+          'I left the text prepared, but this VS Code version does not expose the safe built-in chat submit command. Please send it manually.',
+          'השארתי את הטקסט מוכן, אך גרסת VS Code הזו אינה חושפת פקודת שליחה בטוחה לצ׳אט המובנה. יש לשלוח ידנית.',
+        ));
+        return;
+      }
+      // This is the last asynchronous boundary before submission. Bind the
+      // confirmation utterance, the exact prepared draft, and the pending
+      // capability to the same current context, then consume the capability
+      // synchronously before invoking the allowlisted submit command.
+      const finalTarget = captureAssistantTarget();
+      if (
+        !pendingStillMatches() ||
+        !bothCapturedContextsMatch(finalTarget) ||
+        !revalidateTargetSnapshot(prepared, finalTarget).valid
+      ) {
+        clearPendingSend(false);
+        speakFeedback(localeText(
+          'I did not send because the chat context changed before submission.',
+          'לא שלחתי מפני שהקשר הצ׳אט השתנה לפני השליחה.',
+        ));
+        return;
+      }
+      const decision = actionPolicy.confirmSend(finalTarget, utteranceId);
+      if (!decision.allowed) {
+        assistantPendingSend = undefined;
+        pendingChatDraft = undefined;
+        explainPolicy(decision.explanation);
+        void pushFullState();
+        return;
+      }
+      await vscode.commands.executeCommand(BUILTIN_CHAT_SUBMIT_COMMAND);
+      assistantPendingSend = undefined;
+      pendingChatDraft = undefined;
+      if (assistantPendingSendTimer) clearTimeout(assistantPendingSendTimer);
+      assistantPendingSendTimer = null;
+      speakFeedback(localeText('I sent the prepared message after your separate confirmation.', 'שלחתי את ההודעה המוכנה לאחר האישור הנפרד שלך.'));
+      void pushFullState();
+      return;
+    }
+
+    const content = plan.content ?? '';
+    if (plan.action === 'request-send') {
+      if (!originalTargetStillValid(captured)) return;
+      const pendingSnapshot = await prepareBuiltInChatDraft(
+        content,
+        () => originalTargetStillValid(captured),
+      );
+      if (!pendingSnapshot) return;
+      const pending = actionPolicy.requestPreparedChatSend(pendingSnapshot, utteranceId);
+      if (!pending.allowed) { explainPolicy(pending.explanation); return; }
+      assistantPendingSend = {
+        id: utteranceId,
+        preview: content.slice(0, 300),
+        targetLabel: targetLabel('chat'),
+      };
+      pendingChatDraft = { id: utteranceId, text: content, snapshot: pendingSnapshot };
+      if (assistantPendingSendTimer) clearTimeout(assistantPendingSendTimer);
+      assistantPendingSendTimer = setTimeout(() => {
+        if (assistantPendingSend?.id !== utteranceId) return;
+        assistantPendingSend = undefined;
+        pendingChatDraft = undefined;
+        actionPolicy.cancelPendingSend();
+        speakFeedback(localeText('I did not send because the confirmation window expired.', 'לא שלחתי מפני שחלון האישור פג.'));
+        void pushFullState();
+      }, 12_050);
+      speakFeedback(localeText(
+        'I prepared the message in chat. Say “confirm send” or use the approval button within twelve seconds.',
+        'הכנתי את ההודעה בצ׳אט. אמור „אשר שליחה” או השתמש בכפתור האישור בתוך שתים־עשרה שניות.',
+      ));
+      void pushFullState();
+      return;
+    }
+
+    if (plan.action === 'write-chat') {
+      if (!originalTargetStillValid(captured)) return;
+      const prepared = await prepareBuiltInChatDraft(
+        content,
+        () => originalTargetStillValid(captured),
+      );
+      if (!prepared) return;
+      if (remember) actionPolicy.rememberLast({ action: 'write-chat', text: content });
+      speakFeedback(successfulFeedback(plan, localeText(
+        'I prepared the draft in the built-in chat without sending it.',
+        'הכנתי את הטיוטה בצ׳אט המובנה בלי לשלוח אותה.',
+      )));
+      return;
+    } else if (plan.action === 'write-terminal') {
+      const initial = snapshotForRequestedTarget(captured, 'terminal');
+      const current = captureAssistantTarget('terminal', vscode.window.activeTerminal ? 'terminal' : null);
+      const terminal = vscode.window.activeTerminal;
+      if (!terminal) {
+        speakFeedback(localeText('I could not find an active terminal.', 'לא מצאתי מסוף פעיל.'));
+        return;
+      }
+      const inserted = insertTerminalText(terminal, content, initial, current);
+      if (!inserted.allowed) { explainPolicy(inserted.explanation); return; }
+    } else if (plan.action === 'write-editor') {
+      const initial = snapshotForRequestedTarget(captured, 'editor');
+      const current = captureAssistantTarget('editor', vscode.window.activeTextEditor ? 'editor' : null);
+      const decision = actionPolicy.authorizeWrite('write-editor', content, initial, current);
+      if (!decision.allowed) { explainPolicy(decision.explanation); return; }
+      const editor = vscode.window.activeTextEditor;
+      if (!editor || !(await injectIntoEditor(editor, content))) {
+        speakFeedback(localeText('The editor rejected the edit, so I made no change.', 'העורך דחה את העריכה, ולכן לא ביצעתי שינוי.'));
+        return;
+      }
+    } else {
+      const current = captureAssistantTarget();
+      const decision = actionPolicy.authorizeWrite('write-here', content, captured, current);
+      if (!decision.allowed) { explainPolicy(decision.explanation); return; }
+      let targetChangedDuringPaste = false;
+      const inserted = await injectIntoFocusedControl(content, () => {
+        const valid = revalidateTargetSnapshot(captured, captureAssistantTarget()).valid;
+        if (!valid) targetChangedDuringPaste = true;
+        return valid;
+      });
+      if (!inserted) {
+        if (targetChangedDuringPaste) {
+          speakFeedback(localeText(
+            'I stopped before pasting because the focused target changed.',
+            'עצרתי לפני ההדבקה מפני שהיעד הממוקד השתנה.',
+          ));
+          return;
+        }
+        speakFeedback(localeText(
+          'I copied the text to the clipboard, but could not confirm that it was pasted.',
+          'העתקתי את הטקסט ללוח, אך לא הצלחתי לוודא שהוא הודבק.',
+        ));
+        return;
+      }
+    }
+
+    if (remember) actionPolicy.rememberLast({ action: plan.action, text: content });
+    speakFeedback(successfulFeedback(plan, localeText('Done.', 'בוצע.')));
+  }
+
+  async function setDeepSeekApiKey(): Promise<void> {
+    if (!context.globalState.get<boolean>(DEEPSEEK_CONSENT_KEY, false)) {
+      const consent = await vscode.window.showWarningMessage(
+        'DeepSeek smart planning sends only the spoken request after the wake phrase, the selected persona, interface language, and minimal target kind/focus metadata to DeepSeek. It never sends screenshots, files, selections, clipboard content, terminal history, or chat history.',
+        { modal: true },
+        'I understand and enable DeepSeek',
+      );
+      if (consent !== 'I understand and enable DeepSeek') {
+        await pushFullState();
+        return;
+      }
+      await context.globalState.update(DEEPSEEK_CONSENT_KEY, true);
+    }
+    const key = await vscode.window.showInputBox({
+      title: 'DeepSeek API Key',
+      prompt: 'Paste your DeepSeek API key (stored only in VS Code SecretStorage)',
+      password: true,
+      ignoreFocusOut: true,
+    });
+    if (!key?.trim()) return;
+    await context.secrets.store(DEEPSEEK_SECRET_KEY, key.trim());
+    deepSeekLastError = undefined;
+    vscode.window.showInformationMessage('Voice Input: DeepSeek API key saved securely.');
+    await pushFullState();
+  }
+
+  async function clearDeepSeekApiKey(): Promise<void> {
+    await context.secrets.delete(DEEPSEEK_SECRET_KEY);
+    deepSeekLastError = undefined;
+    vscode.window.showInformationMessage('Voice Input: DeepSeek API key cleared. Deterministic commands remain available.');
+    await pushFullState();
+  }
+
+  async function configureDeepSeek(): Promise<void> {
+    const existing = await context.secrets.get(DEEPSEEK_SECRET_KEY);
+    if (!existing) {
+      await setDeepSeekApiKey();
+      return;
+    }
+    const choice = await vscode.window.showQuickPick([
+      { label: '$(key) Replace DeepSeek API key', action: 'set' as const },
+      { label: '$(trash) Clear DeepSeek API key', action: 'clear' as const },
+    ], { title: 'Voice Input: DeepSeek setup' });
+    if (choice?.action === 'set') await setDeepSeekApiKey();
+    else if (choice?.action === 'clear') await clearDeepSeekApiKey();
   }
 
   async function cancelPushToTalk(): Promise<void> {
@@ -292,6 +915,7 @@ export async function activate(context: vscode.ExtensionContext) {
     assistantVad = null;
     assistantQueuedUtterance = null;
     assistantTranscriptionActive = false;
+    clearPendingSend(false);
     if (assistantRestartTimer) {
       clearTimeout(assistantRestartTimer);
       assistantRestartTimer = null;
@@ -376,17 +1000,17 @@ export async function activate(context: vscode.ExtensionContext) {
   }
 
   function enqueueAssistantUtterance(
-    utterance: SegmentedUtterance,
+    item: CapturedAssistantUtterance,
     generation: number,
   ): void {
     if (!assistantListening || generation !== assistantGeneration) return;
     if (!assistantTranscriptionActive) {
       assistantTranscriptionActive = true;
-      void processAssistantUtterance(utterance, generation);
+      void processAssistantUtterance(item, generation);
       return;
     }
     if (!assistantQueuedUtterance) {
-      assistantQueuedUtterance = utterance;
+      assistantQueuedUtterance = item;
       return;
     }
     failAssistant('Voice Input assistant stopped: transcription queue overflow.');
@@ -406,7 +1030,15 @@ export async function activate(context: vscode.ExtensionContext) {
       }
       if (result.signals.some((signal) => signal.type === 'utterance-queued')) {
         const utterance = vad.takeUtterance();
-        if (utterance) enqueueAssistantUtterance(utterance, generation);
+        if (utterance) {
+          // Capture before transcription/LLM latency. This snapshot is carried
+          // through planning and checked again immediately before mutation.
+          enqueueAssistantUtterance({
+            utterance,
+            snapshot: captureAssistantTarget(),
+            id: `utterance-${Date.now()}-${++assistantUtteranceSequence}`,
+          }, generation);
+        }
       }
     } catch (error) {
       failAssistant(`Voice Input assistant stopped: ${(error as Error).message}`);
@@ -414,10 +1046,11 @@ export async function activate(context: vscode.ExtensionContext) {
   }
 
   async function processAssistantUtterance(
-    utterance: SegmentedUtterance,
+    item: CapturedAssistantUtterance,
     generation: number,
   ): Promise<void> {
     const controller = new AbortController();
+    let phase: 'transcription' | 'planning' | 'action' = 'transcription';
     activeTranscriptions.add(controller);
     assistantTranscriptions.add(controller);
     try {
@@ -431,7 +1064,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
       const settings = readSettings();
       const text = await transcribe({
-        audio: pcm16FramesToWav([utterance.audio], ASSISTANT_SAMPLE_RATE),
+        audio: pcm16FramesToWav([item.utterance.audio], ASSISTANT_SAMPLE_RATE),
         mime: 'audio/wav',
         apiKey,
         model: settings.model,
@@ -445,29 +1078,38 @@ export async function activate(context: vscode.ExtensionContext) {
         : DEFAULT_WAKE_PHRASES;
       const parsed = parseAssistantText(text, { wakePhrases });
       if (!parsed.wakeDetected) return;
-
-      if (parsed.intent.kind === 'paste') {
-        // The fallback is append-only insertion/paste. It never presses Enter.
-        await injectText(parsed.intent.text, 'auto');
-      } else {
-        switch (parsed.intent.action) {
-          case 'stop-listening':
-            await stopAssistantSession();
-            break;
-          case 'open-chat':
-            await vscode.commands.executeCommand('workbench.action.chat.open');
-            break;
-          case 'open-terminal':
-            await vscode.commands.executeCommand('workbench.action.terminal.toggleTerminal');
-            break;
-          case 'open-settings':
-            await vscode.commands.executeCommand('workbench.action.openSettings', 'voiceInput');
-            break;
-        }
-      }
+      phase = 'planning';
+      const fallbackPlan = deterministicPlan(parsed.postWakeText, parsed.intent);
+      // Confirmation authority is local-only: an explicit recognized phrase
+      // bypasses remote planning, while model output cannot contain this action.
+      const plan = parsed.intent.kind === 'action' && parsed.intent.action === 'confirm-send'
+        ? fallbackPlan
+        : await createAssistantPlan(
+          parsed.postWakeText,
+          item.snapshot,
+          controller.signal,
+          fallbackPlan,
+        );
+      if (!assistantListening || generation !== assistantGeneration || controller.signal.aborted) return;
+      phase = 'action';
+      await executeAssistantPlan(plan, item.snapshot, item.id);
     } catch (error) {
       if (!controller.signal.aborted && assistantListening && generation === assistantGeneration) {
-        failAssistant(`Voice Input assistant stopped: ${(error as Error).message}`);
+        if (error instanceof DeepSeekClientError) {
+          // Smart planning is optional. A provider failure must not turn into a
+          // guessed mutation, so explain it and keep listening.
+          speakFeedback(localeText(
+            'DeepSeek could not safely plan this request, so I made no change.',
+            'DeepSeek לא הצליח לתכנן את הבקשה בבטחה, ולכן לא ביצעתי שינוי.',
+          ));
+        } else if (phase === 'action') {
+          speakFeedback(localeText(
+            'The action failed safely, so I made no further change.',
+            'הפעולה נכשלה באופן בטוח, ולכן לא ביצעתי שינוי נוסף.',
+          ));
+        } else {
+          failAssistant(`Voice Input assistant stopped: ${(error as Error).message}`);
+        }
       }
     } finally {
       activeTranscriptions.delete(controller);
@@ -491,7 +1133,7 @@ export async function activate(context: vscode.ExtensionContext) {
 
     if (!context.globalState.get<boolean>(ASSISTANT_CONSENT_KEY, false)) {
       const consent = await vscode.window.showWarningMessage(
-        'Voice Input assistant uses the microphone continuously while this VS Code window is running. Completed speech segments are sent to Soniox for transcription; silence stays local. It only pastes text or runs the listed safe VS Code actions, and never submits chat messages.',
+        'Voice Input assistant uses the microphone continuously while this VS Code window is running. Completed speech segments are sent to Soniox for transcription; silence stays local. Actions stay on a closed safety list. Built-in chat submission is possible only after a separate confirmation within 12 seconds.',
         { modal: true },
         'Start listening',
       );
@@ -801,6 +1443,56 @@ export async function activate(context: vscode.ExtensionContext) {
         await pushFullState();
         break;
       }
+      case 'assistant-persona-change':
+        await writeSettings({ assistantPersona: normalizePersonaId(msg.persona) });
+        await pushFullState();
+        break;
+      case 'assistant-deepseek-setup':
+        await configureDeepSeek();
+        break;
+      case 'assistant-speech-settings-change':
+        await writeSettings({
+          assistantSpeechEnabled: msg.enabled,
+          assistantSpeechVoiceUri: msg.voiceUri,
+          assistantSpeechRate: msg.rate,
+        });
+        if (!msg.enabled) {
+          provider.cancelSpeaking();
+          assistantSpeaking = false;
+        }
+        await pushFullState();
+        break;
+      case 'assistant-stop-speaking':
+        provider.cancelSpeaking();
+        assistantSpeaking = false;
+        await pushFullState();
+        break;
+      case 'assistant-speech-started':
+        assistantSpeaking = true;
+        break;
+      case 'assistant-speech-finished':
+        assistantSpeaking = false;
+        log('assistant speech finished:', msg.outcome);
+        break;
+      case 'assistant-pending-send-confirm':
+        if (assistantPendingSend?.id === msg.id) {
+          try {
+            await executeAssistantPlan({
+              action: 'confirm-send', target: 'current', content: null,
+              spokenReply: '', reason: '', confidence: 1, requiresConfirmation: false,
+            }, captureAssistantTarget(), `ui-confirm-${Date.now()}-${++assistantUtteranceSequence}`, false);
+          } catch {
+            clearPendingSend(false);
+            speakFeedback(localeText(
+              'The send confirmation failed safely. The prepared text was not submitted.',
+              'אישור השליחה נכשל באופן בטוח. הטקסט המוכן לא נשלח.',
+            ));
+          }
+        }
+        break;
+      case 'assistant-pending-send-cancel':
+        if (assistantPendingSend?.id === msg.id) clearPendingSend(true);
+        break;
       case 'set-api-key':
         await vscode.commands.executeCommand('voiceInput.setApiKey');
         break;
@@ -820,6 +1512,18 @@ export async function activate(context: vscode.ExtensionContext) {
   context.subscriptions.push(
     vscode.workspace.onDidChangeConfiguration((e) => {
       if (e.affectsConfiguration('voiceInput')) void pushFullState();
+    }),
+    vscode.window.onDidChangeWindowState((state) => {
+      if (!state.focused && intentionalTargetTransition === 0) clearPendingSend(false);
+    }),
+    vscode.window.tabGroups.onDidChangeTabs(() => {
+      if (intentionalTargetTransition === 0) clearPendingSend(false);
+    }),
+    vscode.window.onDidChangeActiveTextEditor(() => {
+      if (intentionalTargetTransition === 0) clearPendingSend(false);
+    }),
+    vscode.window.onDidChangeActiveTerminal(() => {
+      if (intentionalTargetTransition === 0) clearPendingSend(false);
     }),
   );
 
@@ -899,6 +1603,8 @@ export async function activate(context: vscode.ExtensionContext) {
       await context.secrets.delete(SECRET_KEY);
       vscode.window.showInformationMessage('Voice Input: API key cleared.');
     }),
+    vscode.commands.registerCommand('voiceInput.setDeepSeekApiKey', setDeepSeekApiKey),
+    vscode.commands.registerCommand('voiceInput.clearDeepSeekApiKey', clearDeepSeekApiKey),
     vscode.commands.registerCommand('voiceInput.clearHistory', async () => {
       await history.clear();
       await pushHistoryOnly();
@@ -954,6 +1660,8 @@ export async function activate(context: vscode.ExtensionContext) {
       assistantHandle?.cancel();
       assistantHandle = null;
       assistantListening = false;
+      clearPendingSend(false);
+      provider.cancelSpeaking();
       assistantVad?.reset();
       assistantVad = null;
       assistantQueuedUtterance = null;

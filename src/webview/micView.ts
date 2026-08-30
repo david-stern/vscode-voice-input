@@ -1,7 +1,16 @@
 import * as vscode from 'vscode';
 import { HistoryEntry } from '../history';
 import { ModelInfo, LanguageInfo } from '../sonioxMeta';
+import type { PersonaId } from '../assistant/personas';
 import { UiLang } from './i18n';
+
+export type DeepSeekStatus = 'not-configured' | 'checking' | 'ready' | 'error';
+
+export interface PendingAssistantSend {
+  id: string;
+  preview: string;
+  targetLabel?: string;
+}
 
 export type WebviewMessage =
   | { type: 'ready' }
@@ -19,6 +28,14 @@ export type WebviewMessage =
   | { type: 'assistant-enabled-change'; enabled: boolean }
   | { type: 'assistant-wake-phrase-change'; wakePhrase: string }
   | { type: 'assistant-disclosure-acknowledged' }
+  | { type: 'assistant-persona-change'; persona: PersonaId }
+  | { type: 'assistant-deepseek-setup' }
+  | { type: 'assistant-speech-settings-change'; enabled: boolean; voiceUri: string; rate: number }
+  | { type: 'assistant-stop-speaking' }
+  | { type: 'assistant-speech-started'; id: string }
+  | { type: 'assistant-speech-finished'; id: string; outcome: 'completed' | 'cancelled' | 'error' | 'unavailable' | 'queue-full' }
+  | { type: 'assistant-pending-send-confirm'; id: string }
+  | { type: 'assistant-pending-send-cancel'; id: string }
   | {
       type: 'settings-update';
       speechLang: string;
@@ -46,23 +63,54 @@ export interface ViewState {
   assistantListening?: boolean;
   assistantWakePhrase?: string;
   assistantDisclosureAcknowledged?: boolean;
+  assistantPersona?: PersonaId;
+  assistantDeepSeekStatus?: DeepSeekStatus;
+  assistantDeepSeekError?: string;
+  assistantSpeechEnabled?: boolean;
+  assistantSpeechVoiceUri?: string;
+  assistantSpeechRate?: number;
+  assistantSpeaking?: boolean;
+  assistantTargetLabel?: string;
+  assistantPlanConfidence?: number;
+  assistantPendingSend?: PendingAssistantSend;
+  assistantFeedback?: string;
 }
+
+export type HostMessage =
+  | { type: 'state'; payload: ViewState }
+  | { type: 'recording-state'; recording: boolean }
+  | { type: 'history'; entries: HistoryEntry[] }
+  | { type: 'meta'; models: ModelInfo[]; languages: LanguageInfo[]; loading: boolean; error?: string }
+  | { type: 'speak'; id: string; text: string; lang?: string }
+  | { type: 'cancel-speaking' };
 
 export class MicViewProvider implements vscode.WebviewViewProvider {
   public static readonly viewType = 'voiceInput.micView';
   private view?: vscode.WebviewView;
   private onMsgCb?: (msg: WebviewMessage) => void;
+  private readonly pendingSpeech: Extract<HostMessage, { type: 'speak' }>[] = [];
+  private statePosted = false;
+  private viewWasDisposed = false;
 
   constructor(private readonly extensionUri: vscode.Uri) {}
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
+    this.viewWasDisposed = false;
     view.webview.options = {
       enableScripts: true,
       localResourceRoots: [vscode.Uri.joinPath(this.extensionUri, 'out', 'webview')],
     };
     view.webview.html = this.renderHtml(view.webview);
     view.webview.onDidReceiveMessage((msg) => this.onMsgCb?.(msg as WebviewMessage));
+    view.onDidDispose(() => {
+      if (this.view === view) {
+        this.view = undefined;
+        this.statePosted = false;
+        this.pendingSpeech.length = 0;
+        this.viewWasDisposed = true;
+      }
+    });
   }
 
   onMessage(cb: (msg: WebviewMessage) => void) {
@@ -70,7 +118,12 @@ export class MicViewProvider implements vscode.WebviewViewProvider {
   }
 
   postState(state: ViewState) {
-    this.view?.webview.postMessage({ type: 'state', payload: state });
+    const posted = this.view?.webview.postMessage({ type: 'state', payload: state });
+    this.statePosted = Boolean(this.view);
+    if (posted && this.pendingSpeech.length > 0) {
+      const pending = this.pendingSpeech.splice(0);
+      for (const message of pending) void this.view?.webview.postMessage(message);
+    }
   }
 
   postRecording(on: boolean) {
@@ -83,6 +136,26 @@ export class MicViewProvider implements vscode.WebviewViewProvider {
 
   postMeta(models: ModelInfo[], languages: LanguageInfo[], loading: boolean, error?: string) {
     this.view?.webview.postMessage({ type: 'meta', models, languages, loading, error });
+  }
+
+  postSpeak(id: string, text: string, lang?: string): 'sent' | 'queued' | 'unavailable' {
+    const message = { type: 'speak', id, text, lang } satisfies HostMessage;
+    if (this.view && this.statePosted) {
+      void this.view.webview.postMessage(message);
+      return 'sent';
+    }
+    if (!this.view && !this.viewWasDisposed && this.pendingSpeech.length < 8) {
+      this.pendingSpeech.push(message);
+      return 'queued';
+    }
+    return 'unavailable';
+  }
+
+  cancelSpeaking(): boolean {
+    this.pendingSpeech.length = 0;
+    if (!this.view || !this.statePosted) return false;
+    void this.view.webview.postMessage({ type: 'cancel-speaking' } satisfies HostMessage);
+    return true;
   }
 
   isVisible(): boolean {
@@ -450,13 +523,25 @@ const CSS = `
     font-size: 12px;
     opacity: 0.85;
   }
+  .assistant-feedback {
+    margin: 0;
+    padding: 8px;
+    border-inline-start: 2px solid var(--accent);
+    background: var(--bg-soft);
+    border-radius: 3px;
+    font-size: 12px;
+    line-height: 1.45;
+    overflow-wrap: anywhere;
+    unicode-bidi: plaintext;
+  }
   .assistant-field {
     display: grid;
     gap: 4px;
     min-width: 0;
     font-size: 11px;
   }
-  .assistant-field input {
+  .assistant-field input,
+  .assistant-field select {
     min-width: 0;
     width: 100%;
     max-width: 100%;
@@ -467,6 +552,65 @@ const CSS = `
     border: 1px solid var(--vscode-input-border, var(--border));
     border-radius: 4px;
     font: inherit;
+  }
+  .assistant-field input[type="range"] {
+    padding: 0;
+    accent-color: var(--accent);
+  }
+  .assistant-subsection,
+  .assistant-target,
+  .pending-send {
+    display: grid;
+    gap: 7px;
+    min-width: 0;
+    padding: 9px;
+    background: var(--bg-soft);
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+  }
+  .assistant-row,
+  .check-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    min-width: 0;
+  }
+  .check-row {
+    justify-content: flex-start;
+    cursor: pointer;
+    font-size: 11px;
+  }
+  .check-row input { accent-color: var(--accent); }
+  .assistant-subsection .btn-ghost,
+  .pending-send button { min-height: 24px; }
+  .field-label { font-size: 11px; font-weight: 600; }
+  .subtle-status,
+  .confidence-label,
+  .pending-send p {
+    margin: 0;
+    font-size: 11px;
+    opacity: 0.8;
+  }
+  .subtle-status.error { color: var(--danger); opacity: 1; }
+  .assistant-target progress {
+    width: 100%;
+    height: 6px;
+    accent-color: var(--accent);
+  }
+  .pending-send {
+    border-color: var(--vscode-inputValidation-warningBorder, var(--border));
+    background: var(--vscode-inputValidation-warningBackground, var(--bg-soft));
+  }
+  .pending-send blockquote {
+    margin: 0;
+    padding-inline-start: 8px;
+    border-inline-start: 2px solid var(--border);
+    overflow-wrap: anywhere;
+    unicode-bidi: plaintext;
+    white-space: pre-wrap;
+    max-height: 120px;
+    overflow-y: auto;
   }
   .toggle-btn {
     background: transparent;
@@ -480,6 +624,10 @@ const CSS = `
     font-size: 11px;
   }
   .toggle-btn.on { background: var(--accent); color: var(--accent-fg); }
+  :is(.btn, .btn-ghost, .toggle-btn):disabled {
+    opacity: 0.45;
+    cursor: default;
+  }
   .assistant-disclosure {
     border-inline-start: 2px solid var(--border);
     padding-inline-start: 8px;

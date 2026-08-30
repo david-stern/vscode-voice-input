@@ -52,7 +52,7 @@ function loadPvRecorder(): PvRecorderConstructor {
     // The native addon must remain lazy: it is optional on unsupported systems
     // and is bundled as an external platform-specific package.
     // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const module = require('@picovoice/pvrecorder-node') as { PvRecorder: PvRecorderConstructor };
+    const module = require('./vendor/pvrecorder-node') as { PvRecorder: PvRecorderConstructor };
     recorderConstructor = module.PvRecorder;
     return recorderConstructor;
   } catch (error) {
