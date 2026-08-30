@@ -8,6 +8,8 @@ Each version corresponds to a git tag of the form `vX.Y.Z`.
 
 ## [Unreleased]
 
+## [1.1.0] — 2026-08-30
+
 ### Added
 - Bundled Picovoice PvRecorder targets for desktop VS Code on supported Linux, macOS, and Windows architectures; recording no longer requires `ffmpeg` or another external audio executable. Real microphone capture still requires validation on each target OS/architecture.
 - Explicit **Toggle Assistant Listening** command and sidebar state with first-use modal consent stored in VS Code global state. Assistant listening never auto-starts and lasts only while VS Code is running.

@@ -180,7 +180,7 @@ The Voice Input sidebar can render its own transcript history with automatic RTL
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
-### Unreleased
+### Version 1.1.0
 - **Audio:** Bundled Picovoice PvRecorder capture replaces external audio-recording executables; desktop VS Code uses the local microphone and no longer needs `ffmpeg` for capture.
 - **Assistant:** Explicit, consented listening sessions with local speech segmentation, bounded transcription work, allowlisted VS Code actions, wake phrases, visible state, and no chat auto-submit.
 - **Privacy/RTL:** Best-effort Soniox remote cleanup, content-free diagnostics, exact Unicode paste, and clearer sandboxed vendor-webview limits.
