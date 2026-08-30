@@ -1,11 +1,25 @@
 import * as vscode from 'vscode';
-import * as path from 'path';
 import { spawn } from 'child_process';
-import { watch as fsWatch } from 'fs';
+import { existsSync } from 'fs';
 import { MicViewProvider, ViewState, WebviewMessage } from './webview/micView';
 import { transcribe } from './stt/soniox';
 import { injectText, InjectionMode } from './inject';
-import { startRecorder, RecorderHandle, pickTool, listAudioDevices, AudioDevice } from './recorder/native';
+import {
+  startRecorder,
+  startPcmStream,
+  RecorderHandle,
+  PcmStreamHandle,
+  listAudioDevices,
+  AudioDevice,
+} from './recorder/native';
+import { pcm16FramesToWav } from './recorder/wav';
+import {
+  ASSISTANT_SAMPLE_RATE,
+  DEFAULT_WAKE_PHRASES,
+  SegmentedUtterance,
+  VadSegmenter,
+  parseAssistantText,
+} from './assistant';
 import { HistoryStore } from './history';
 import { UiLang } from './webview/i18n';
 import { log, show as showLog } from './log';
@@ -19,6 +33,7 @@ import {
 } from './sonioxMeta';
 
 const SECRET_KEY = 'SONIOX_API_KEY';
+const ASSISTANT_CONSENT_KEY = 'voiceInput.assistantDisclosureAcknowledged.v1';
 
 interface Settings {
   speechLang: string;
@@ -26,6 +41,7 @@ interface Settings {
   ttlDays: 0 | 1 | 7 | 30;
   model: string;
   injectionMode: InjectionMode;
+  assistantWakePhrase: string;
 }
 
 function readSettings(): Settings {
@@ -36,6 +52,7 @@ function readSettings(): Settings {
     ttlDays: (cfg.get<number>('historyTtlDays', 30) as 0 | 1 | 7 | 30),
     model: cfg.get<string>('sttModel', 'stt-async-v4'),
     injectionMode: cfg.get<InjectionMode>('injectionMode', 'auto'),
+    assistantWakePhrase: cfg.get<string>('assistantWakePhrase', '').trim(),
   };
 }
 
@@ -47,6 +64,8 @@ async function writeSettings(partial: Partial<Settings>) {
   if (partial.ttlDays !== undefined) await cfg.update('historyTtlDays', partial.ttlDays, target);
   if (partial.model !== undefined && partial.model.length > 0)
     await cfg.update('sttModel', partial.model, target);
+  if (partial.assistantWakePhrase !== undefined)
+    await cfg.update('assistantWakePhrase', partial.assistantWakePhrase.trim(), target);
 }
 
 interface MetaCache {
@@ -126,11 +145,22 @@ export async function activate(context: vscode.ExtensionContext) {
 
   let handle: RecorderHandle | null = null;
   let isRecording = false;
+  let pushToTalkStopTimer: NodeJS.Timeout | null = null;
+  let assistantHandle: PcmStreamHandle | null = null;
+  let assistantListening = false;
+  let assistantGeneration = 0;
+  let assistantVad: VadSegmenter | null = null;
+  let assistantRestartTimer: NodeJS.Timeout | null = null;
+  let assistantTranscriptionActive = false;
+  let assistantQueuedUtterance: SegmentedUtterance | null = null;
+  let deactivating = false;
+  const activeTranscriptions = new Set<AbortController>();
+  const assistantTranscriptions = new Set<AbortController>();
+  const pushToTalkTranscriptions = new Set<AbortController>();
 
   // ── Device list cache ──────────────────────────────────────────────────────
   let deviceCache: { devices: AudioDevice[]; ts: number } | null = null;
-  // Short TTL so a plug/unplug is reflected within a few seconds even without
-  // a file-system event (e.g. on macOS / Windows where we have no watcher).
+  // A short TTL keeps scans current without holding OS-specific filesystem watchers.
   const DEVICE_CACHE_TTL = 5_000;
 
   async function getCachedDevices(forceRefresh = false): Promise<AudioDevice[]> {
@@ -139,30 +169,40 @@ export async function activate(context: vscode.ExtensionContext) {
       return deviceCache.devices;
     }
     const devices = await listAudioDevices();
+    const configuredDevice = vscode.workspace
+      .getConfiguration('voiceInput')
+      .get<string>('audioDevice', '')
+      .trim();
+    if (configuredDevice && !devices.some((device) => device.id === configuredDevice)) {
+      const legacyMatches = devices.filter((device) => device.label === configuredDevice);
+      if (legacyMatches.length === 1) {
+        await vscode.workspace
+          .getConfiguration('voiceInput')
+          .update('audioDevice', legacyMatches[0].id, vscode.ConfigurationTarget.Global);
+      }
+    }
     deviceCache = { devices, ts: Date.now() };
     return devices;
   }
 
   // Populate the cache in the background so it's ready on first record attempt.
-  void getCachedDevices();
-
-  // On Linux, watch /dev/snd/ for device additions/removals (USB mic plug/unplug)
-  // and immediately invalidate the cache so the next call gets a fresh list.
-  if (process.platform === 'linux') {
-    try {
-      const sndWatcher = fsWatch('/dev/snd/', () => {
-        deviceCache = null;
-        void getCachedDevices().then(() => void pushFullState());
-      });
-      context.subscriptions.push({ dispose: () => sndWatcher.close() });
-    } catch {
-      // /dev/snd/ may not exist on systems without ALSA (unlikely but safe to ignore)
-    }
-  }
+  void getCachedDevices().catch((error) => {
+    log('native audio enumeration failed:', (error as Error).message);
+  });
 
   const setIdle = () => {
     isRecording = false;
+    if (assistantListening) {
+      status.text = '$(radio-tower) Voice — assistant listening';
+      status.tooltip = 'Voice Input assistant is listening. Click to start push-to-talk instead.';
+      status.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+      provider.postRecording(false);
+      return;
+    }
     status.text = '$(mic) Voice';
+    status.tooltip = process.platform === 'darwin'
+      ? 'Voice Input — click or Ctrl+Option+M to toggle'
+      : 'Voice Input — click or Alt+M to toggle';
     status.backgroundColor = undefined;
     provider.postRecording(false);
   };
@@ -174,14 +214,25 @@ export async function activate(context: vscode.ExtensionContext) {
   };
   const setBusy = (label: string) => {
     status.text = `$(sync~spin) Voice — ${label}`;
+    status.tooltip = 'Voice Input is processing audio.';
     status.backgroundColor = undefined;
   };
 
-  const tool = await pickTool();
+  const setAssistantListening = () => {
+    assistantListening = true;
+    status.text = '$(radio-tower) Voice — assistant listening';
+    status.tooltip = 'Voice Input assistant is listening. Run Toggle Assistant Listening to stop.';
+    status.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+    void pushFullState();
+  };
 
-  // Check all required dependencies and prompt to install if anything is missing.
-  // Run in background — don't block activation.
-  void checkDependencies(context);
+  const setAssistantStoppedWithError = (message: string) => {
+    status.text = '$(error) Voice — assistant stopped';
+    status.tooltip = message;
+    status.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+    provider.postRecording(false);
+    void pushFullState();
+  };
 
   async function pushFullState() {
     const s = readSettings();
@@ -201,6 +252,10 @@ export async function activate(context: vscode.ExtensionContext) {
       metaError: meta.error,
       audioDevice,
       audioDevices: deviceCache?.devices ?? [],
+      assistantEnabled: assistantListening,
+      assistantListening,
+      assistantWakePhrase: s.assistantWakePhrase,
+      assistantDisclosureAcknowledged: context.globalState.get<boolean>(ASSISTANT_CONSENT_KEY, false),
     };
     provider.postState(view);
   }
@@ -211,8 +266,359 @@ export async function activate(context: vscode.ExtensionContext) {
     provider.postHistory(entries);
   }
 
+  async function cancelPushToTalk(): Promise<void> {
+    if (pushToTalkStopTimer) {
+      clearTimeout(pushToTalkStopTimer);
+      pushToTalkStopTimer = null;
+    }
+    for (const controller of pushToTalkTranscriptions) controller.abort();
+    pushToTalkTranscriptions.clear();
+    const activeHandle = handle;
+    handle = null;
+    isRecording = false;
+    if (!activeHandle) return;
+    activeHandle.cancel();
+    try {
+      await activeHandle.stop();
+    } catch {
+      // Cancellation is best effort and must not block the assistant from starting.
+    }
+  }
+
+  async function stopAssistantSession(errorMessage?: string): Promise<void> {
+    assistantGeneration += 1;
+    assistantListening = false;
+    assistantVad?.reset();
+    assistantVad = null;
+    assistantQueuedUtterance = null;
+    assistantTranscriptionActive = false;
+    if (assistantRestartTimer) {
+      clearTimeout(assistantRestartTimer);
+      assistantRestartTimer = null;
+    }
+    for (const controller of assistantTranscriptions) controller.abort();
+    assistantTranscriptions.clear();
+
+    const activeHandle = assistantHandle;
+    assistantHandle = null;
+    if (activeHandle) {
+      activeHandle.cancel();
+      try {
+        await activeHandle.stop();
+      } catch {
+        // Preserve the explicit stop/error state rather than surfacing a second failure.
+      }
+    }
+
+    if (errorMessage) {
+      setAssistantStoppedWithError(errorMessage);
+      if (!deactivating) void vscode.window.showErrorMessage(errorMessage);
+    } else {
+      setIdle();
+      void pushFullState();
+    }
+  }
+
+  function failAssistant(message: string): void {
+    if (!assistantListening) return;
+    void stopAssistantSession(message);
+  }
+
+  function captureFailureMessage(scope: 'assistant' | 'recording', error?: unknown): string {
+    const detail = error instanceof Error && error.message ? `: ${error.message}` : '';
+    if (readSettings().uiLang === 'he') {
+      return scope === 'assistant'
+        ? `Voice Input: ההאזנה של העוזר הופסקה בגלל שגיאת מיקרופון${detail}`
+        : `Voice Input: ההקלטה הופסקה בגלל שגיאת מיקרופון${detail}`;
+    }
+    return scope === 'assistant'
+      ? `Voice Input assistant stopped because microphone capture failed${detail}`
+      : `Voice Input recording stopped because microphone capture failed${detail}`;
+  }
+
+  function monitorAssistantCapture(
+    stream: PcmStreamHandle,
+    generation: number,
+  ): void {
+    void stream.outcome.then((outcome) => {
+      if (
+        !assistantListening ||
+        generation !== assistantGeneration ||
+        assistantHandle !== stream
+      ) return;
+      if (outcome.reason === 'error') {
+        failAssistant(captureFailureMessage('assistant', outcome.error));
+      } else if (outcome.reason === 'limit') {
+        failAssistant(captureFailureMessage('assistant'));
+      }
+    });
+  }
+
+  function monitorPushToTalkCapture(
+    recordingHandle: RecorderHandle,
+  ): void {
+    void recordingHandle.outcome.then((outcome) => {
+      if (handle !== recordingHandle || outcome.reason !== 'error') return;
+      handle = null;
+      isRecording = false;
+      if (pushToTalkStopTimer) {
+        clearTimeout(pushToTalkStopTimer);
+        pushToTalkStopTimer = null;
+      }
+      const message = captureFailureMessage('recording', outcome.error);
+      status.text = '$(error) Voice — recording stopped';
+      status.tooltip = message;
+      status.backgroundColor = new vscode.ThemeColor('statusBarItem.errorBackground');
+      provider.postRecording(false);
+      void recordingHandle.stop().catch(() => {});
+      if (!deactivating) void vscode.window.showErrorMessage(message);
+    });
+  }
+
+  function enqueueAssistantUtterance(
+    utterance: SegmentedUtterance,
+    generation: number,
+  ): void {
+    if (!assistantListening || generation !== assistantGeneration) return;
+    if (!assistantTranscriptionActive) {
+      assistantTranscriptionActive = true;
+      void processAssistantUtterance(utterance, generation);
+      return;
+    }
+    if (!assistantQueuedUtterance) {
+      assistantQueuedUtterance = utterance;
+      return;
+    }
+    failAssistant('Voice Input assistant stopped: transcription queue overflow.');
+  }
+
+  function handleAssistantFrame(
+    frame: Int16Array,
+    generation: number,
+    vad: VadSegmenter,
+  ): void {
+    if (!assistantListening || generation !== assistantGeneration) return;
+    try {
+      const result = vad.pushFrame(frame);
+      if (!result.accepted) {
+        failAssistant('Voice Input assistant stopped: audio processing could not keep up.');
+        return;
+      }
+      if (result.signals.some((signal) => signal.type === 'utterance-queued')) {
+        const utterance = vad.takeUtterance();
+        if (utterance) enqueueAssistantUtterance(utterance, generation);
+      }
+    } catch (error) {
+      failAssistant(`Voice Input assistant stopped: ${(error as Error).message}`);
+    }
+  }
+
+  async function processAssistantUtterance(
+    utterance: SegmentedUtterance,
+    generation: number,
+  ): Promise<void> {
+    const controller = new AbortController();
+    activeTranscriptions.add(controller);
+    assistantTranscriptions.add(controller);
+    try {
+      const apiKey = await context.secrets.get(SECRET_KEY);
+      if (!apiKey) throw new Error('Soniox API key is no longer available.');
+      if (!assistantListening || generation !== assistantGeneration) return;
+
+      status.text = '$(sync~spin) Voice — assistant transcribing';
+      status.tooltip = 'Voice Input assistant is transcribing one completed speech segment.';
+      status.backgroundColor = undefined;
+
+      const settings = readSettings();
+      const text = await transcribe({
+        audio: pcm16FramesToWav([utterance.audio], ASSISTANT_SAMPLE_RATE),
+        mime: 'audio/wav',
+        apiKey,
+        model: settings.model,
+        languageHint: settings.speechLang,
+        signal: controller.signal,
+      });
+      if (!assistantListening || generation !== assistantGeneration || !text) return;
+
+      const wakePhrases = settings.assistantWakePhrase
+        ? [settings.assistantWakePhrase]
+        : DEFAULT_WAKE_PHRASES;
+      const parsed = parseAssistantText(text, { wakePhrases });
+      if (!parsed.wakeDetected) return;
+
+      if (parsed.intent.kind === 'paste') {
+        // The fallback is append-only insertion/paste. It never presses Enter.
+        await injectText(parsed.intent.text, 'auto');
+      } else {
+        switch (parsed.intent.action) {
+          case 'stop-listening':
+            await stopAssistantSession();
+            break;
+          case 'open-chat':
+            await vscode.commands.executeCommand('workbench.action.chat.open');
+            break;
+          case 'open-terminal':
+            await vscode.commands.executeCommand('workbench.action.terminal.toggleTerminal');
+            break;
+          case 'open-settings':
+            await vscode.commands.executeCommand('workbench.action.openSettings', 'voiceInput');
+            break;
+        }
+      }
+    } catch (error) {
+      if (!controller.signal.aborted && assistantListening && generation === assistantGeneration) {
+        failAssistant(`Voice Input assistant stopped: ${(error as Error).message}`);
+      }
+    } finally {
+      activeTranscriptions.delete(controller);
+      assistantTranscriptions.delete(controller);
+      if (!assistantListening || generation !== assistantGeneration) return;
+
+      const next = assistantQueuedUtterance;
+      assistantQueuedUtterance = null;
+      if (next) {
+        void processAssistantUtterance(next, generation);
+      } else {
+        assistantTranscriptionActive = false;
+        setAssistantListening();
+      }
+    }
+  }
+
+  async function startAssistantSession(): Promise<void> {
+    if (assistantListening || deactivating) return;
+    const generation = ++assistantGeneration;
+
+    if (!context.globalState.get<boolean>(ASSISTANT_CONSENT_KEY, false)) {
+      const consent = await vscode.window.showWarningMessage(
+        'Voice Input assistant uses the microphone continuously while this VS Code window is running. Completed speech segments are sent to Soniox for transcription; silence stays local. It only pastes text or runs the listed safe VS Code actions, and never submits chat messages.',
+        { modal: true },
+        'Start listening',
+      );
+      if (consent !== 'Start listening' || generation !== assistantGeneration) {
+        void pushFullState();
+        return;
+      }
+      await context.globalState.update(ASSISTANT_CONSENT_KEY, true);
+    }
+
+    const apiKey = await context.secrets.get(SECRET_KEY);
+    if (generation !== assistantGeneration) return;
+    if (!apiKey) {
+      const selected = await vscode.window.showErrorMessage(
+        'Voice Input: SONIOX_API_KEY not set.',
+        'Set now',
+      );
+      if (selected === 'Set now') await vscode.commands.executeCommand('voiceInput.setApiKey');
+      await pushFullState();
+      return;
+    }
+
+    try {
+      await getCachedDevices();
+    } catch {
+      // startPcmStream will surface the authoritative recorder error below.
+    }
+    await cancelPushToTalk();
+    if (generation !== assistantGeneration) return;
+
+    const vad = new VadSegmenter();
+    const configuredDevice = vscode.workspace
+      .getConfiguration('voiceInput')
+      .get<string>('audioDevice', '')
+      .trim();
+    try {
+      const stream = await startPcmStream({
+        deviceId: configuredDevice,
+        maxDurationMs: 5 * 60 * 1000,
+        onFrame: (frame) => handleAssistantFrame(frame, generation, vad),
+      });
+      if (generation !== assistantGeneration || deactivating) {
+        stream.cancel();
+        await stream.stop().catch(() => {});
+        return;
+      }
+      if (stream.sampleRate !== ASSISTANT_SAMPLE_RATE) {
+        stream.cancel();
+        await stream.stop().catch(() => {});
+        throw new Error(`assistant requires ${ASSISTANT_SAMPLE_RATE} Hz audio`);
+      }
+      assistantVad = vad;
+      assistantHandle = stream;
+      monitorAssistantCapture(stream, generation);
+      assistantQueuedUtterance = null;
+      assistantTranscriptionActive = false;
+      setAssistantListening();
+      // The native capture has a hard safety cap. Renew it before the cap so an
+      // explicitly started session remains active while VS Code is running.
+      assistantRestartTimer = setTimeout(() => {
+        assistantRestartTimer = null;
+        void renewAssistantCapture(generation, vad);
+      }, 4 * 60 * 1000 + 15 * 1000);
+    } catch (error) {
+      if (generation === assistantGeneration) {
+        assistantListening = false;
+        setAssistantStoppedWithError(`Voice Input assistant could not start: ${(error as Error).message}`);
+      }
+    }
+  }
+
+  async function renewAssistantCapture(generation: number, vad: VadSegmenter): Promise<void> {
+    if (!assistantListening || generation !== assistantGeneration || deactivating) return;
+    // Never rotate the native handle in the middle of an utterance. VAD caps an
+    // utterance at 30 seconds, and renewal starts with enough headroom to wait.
+    if (vad.isSpeaking) {
+      assistantRestartTimer = setTimeout(() => {
+        assistantRestartTimer = null;
+        void renewAssistantCapture(generation, vad);
+      }, 250);
+      return;
+    }
+
+    const previous = assistantHandle;
+    assistantHandle = null;
+    if (previous) {
+      previous.cancel();
+      await previous.stop().catch(() => {});
+    }
+    if (!assistantListening || generation !== assistantGeneration || deactivating) return;
+
+    try {
+      const configuredDevice = vscode.workspace
+        .getConfiguration('voiceInput')
+        .get<string>('audioDevice', '')
+        .trim();
+      const next = await startPcmStream({
+        deviceId: configuredDevice,
+        maxDurationMs: 5 * 60 * 1000,
+        onFrame: (frame) => handleAssistantFrame(frame, generation, vad),
+      });
+      if (!assistantListening || generation !== assistantGeneration || deactivating) {
+        next.cancel();
+        await next.stop().catch(() => {});
+        return;
+      }
+      assistantHandle = next;
+      monitorAssistantCapture(next, generation);
+      assistantRestartTimer = setTimeout(() => {
+        assistantRestartTimer = null;
+        void renewAssistantCapture(generation, vad);
+      }, 4 * 60 * 1000 + 15 * 1000);
+    } catch (error) {
+      failAssistant(`Voice Input assistant stopped: ${(error as Error).message}`);
+    }
+  }
+
   async function startRecording() {
     if (isRecording || handle) return;
+
+    if (assistantListening || assistantHandle) await stopAssistantSession();
+
+    try {
+      await getCachedDevices();
+    } catch {
+      // startRecorder will surface the authoritative recorder error below.
+    }
 
     // If the device cache is populated and shows no audio inputs, block early
     // and guide the user instead of letting the recorder fail with a cryptic error.
@@ -234,15 +640,27 @@ export async function activate(context: vscode.ExtensionContext) {
     }
 
     try {
-      handle = await startRecorder();
+      const recordingHandle = await startRecorder();
+      handle = recordingHandle;
+      monitorPushToTalkCapture(recordingHandle);
       setRecording();
+      pushToTalkStopTimer = setTimeout(() => {
+        pushToTalkStopTimer = null;
+        void stopRecording();
+      }, 4 * 60 * 1000 + 50 * 1000);
     } catch (e) {
-      vscode.window.showErrorMessage(`Voice Input: ${(e as Error).message}`);
+      if ((e as Error).name !== 'AbortError') {
+        vscode.window.showErrorMessage(`Voice Input: ${(e as Error).message}`);
+      }
       setIdle();
     }
   }
 
   async function stopRecording() {
+    if (pushToTalkStopTimer) {
+      clearTimeout(pushToTalkStopTimer);
+      pushToTalkStopTimer = null;
+    }
     if (!handle) {
       setIdle();
       return;
@@ -258,7 +676,9 @@ export async function activate(context: vscode.ExtensionContext) {
       }
       await transcribeAndDispatch(result.wav, result.mime);
     } catch (e) {
-      vscode.window.showErrorMessage(`Voice Input: ${(e as Error).message}`);
+      if ((e as Error).name !== 'AbortError') {
+        vscode.window.showErrorMessage(`Voice Input: ${(e as Error).message}`);
+      }
     } finally {
       setIdle();
     }
@@ -279,22 +699,28 @@ export async function activate(context: vscode.ExtensionContext) {
     }
     const s = readSettings();
     setBusy('transcribing');
-    const text = await transcribe({
-      audio,
-      mime,
-      apiKey,
-      model: s.model,
-      languageHint: s.speechLang,
-    });
-    if (!text) return;
+    const controller = new AbortController();
+    activeTranscriptions.add(controller);
+    pushToTalkTranscriptions.add(controller);
+    try {
+      const text = await transcribe({
+        audio,
+        mime,
+        apiKey,
+        model: s.model,
+        languageHint: s.speechLang,
+        signal: controller.signal,
+      });
+      if (!text || controller.signal.aborted) return;
 
-    await history.add(text, s.speechLang);
-    await pushHistoryOnly();
-    await injectText(text, s.injectionMode);
-    // Small delay to let the paste/type operation fully settle before the
-    // status-bar and webview state reset (setIdle) triggers a VS Code UI
-    // refresh that can steal focus and race with the in-flight paste.
-    await new Promise((r) => setTimeout(r, 150));
+      await history.add(text, s.speechLang);
+      await pushHistoryOnly();
+      await injectText(text, s.injectionMode);
+      await abortableDelay(150, controller.signal);
+    } finally {
+      activeTranscriptions.delete(controller);
+      pushToTalkTranscriptions.delete(controller);
+    }
   }
 
   provider.onMessage(async (msg: WebviewMessage) => {
@@ -353,6 +779,28 @@ export async function activate(context: vscode.ExtensionContext) {
         await pushFullState();
         break;
       }
+      case 'assistant-enabled-change':
+        if (msg.enabled) await startAssistantSession();
+        else await stopAssistantSession();
+        break;
+      case 'assistant-wake-phrase-change':
+        await writeSettings({ assistantWakePhrase: msg.wakePhrase });
+        await pushFullState();
+        break;
+      case 'assistant-disclosure-acknowledged': {
+        if (!context.globalState.get<boolean>(ASSISTANT_CONSENT_KEY, false)) {
+          const acknowledged = await vscode.window.showWarningMessage(
+            'When assistant listening is active, completed speech segments are sent to Soniox for transcription. Silence stays local. Listening only starts when you explicitly enable it and stops when VS Code closes.',
+            { modal: true },
+            'I understand',
+          );
+          if (acknowledged === 'I understand') {
+            await context.globalState.update(ASSISTANT_CONSENT_KEY, true);
+          }
+        }
+        await pushFullState();
+        break;
+      }
       case 'set-api-key':
         await vscode.commands.executeCommand('voiceInput.setApiKey');
         break;
@@ -380,6 +828,10 @@ export async function activate(context: vscode.ExtensionContext) {
       // IMPORTANT: do NOT focus/open the view — recording happens in background.
       if (isRecording) await stopRecording();
       else await startRecording();
+    }),
+    vscode.commands.registerCommand('voiceInput.toggleAssistant', async () => {
+      if (assistantListening || assistantHandle) await stopAssistantSession();
+      else await startAssistantSession();
     }),
     vscode.commands.registerCommand('voiceInput.selectAudioDevice', async () => {
       const devices = await vscode.window.withProgress(
@@ -459,24 +911,29 @@ export async function activate(context: vscode.ExtensionContext) {
       log('=== DIAGNOSTICS ===');
       log('version:', ext.version);
       log('session:', session, 'WAYLAND_DISPLAY:', wayland, 'DISPLAY:', display);
-      log('PATH bin checks (using ' + (process.platform === 'win32' ? 'where' : 'which') + '):');
+      log('paste helper checks (using ' + (process.platform === 'win32' ? 'where' : 'which') + '):');
       const checks =
         process.platform === 'darwin'
-          ? ['ffmpeg', 'rec', 'osascript', 'pbcopy', 'pbpaste']
+          ? ['osascript', 'pbcopy', 'pbpaste']
           : process.platform === 'win32'
-          ? ['ffmpeg', 'powershell', 'clip']
-          : ['ffmpeg', 'parecord', 'arecord', 'wl-copy', 'wl-paste', 'wtype', 'ydotool', 'xdotool'];
+          ? ['powershell', 'clip']
+          : ['wl-copy', 'wl-paste', 'wtype', 'ydotool', 'xdotool'];
       const whichCmd = process.platform === 'win32' ? 'where' : 'which';
       for (const bin of checks) {
         const ok = await new Promise<boolean>((r) => {
-          const p = require('child_process').spawn(whichCmd, [bin], { stdio: 'ignore' });
+          const p = spawn(whichCmd, [bin], { stdio: 'ignore' });
           p.on('exit', (code: number) => r(code === 0));
           p.on('error', () => r(false));
         });
         log(`  ${bin}:`, ok ? 'OK' : 'MISSING');
       }
+      try {
+        log('native audio devices:', (await getCachedDevices(true)).length);
+      } catch (error) {
+        log('native audio enumeration failed:', (error as Error).message);
+      }
       if (process.platform !== 'darwin') {
-        const sock = require('fs').existsSync('/tmp/.ydotool_socket');
+        const sock = existsSync('/tmp/.ydotool_socket');
         log('ydotool socket /tmp/.ydotool_socket:', sock ? 'EXISTS' : 'MISSING');
       }
       log('platform:', process.platform);
@@ -484,6 +941,28 @@ export async function activate(context: vscode.ExtensionContext) {
       showLog();
     }),
   );
+
+  context.subscriptions.push({
+    dispose() {
+      deactivating = true;
+      if (assistantRestartTimer) clearTimeout(assistantRestartTimer);
+      assistantRestartTimer = null;
+      if (pushToTalkStopTimer) clearTimeout(pushToTalkStopTimer);
+      pushToTalkStopTimer = null;
+      handle?.cancel();
+      handle = null;
+      assistantHandle?.cancel();
+      assistantHandle = null;
+      assistantListening = false;
+      assistantVad?.reset();
+      assistantVad = null;
+      assistantQueuedUtterance = null;
+      for (const controller of activeTranscriptions) controller.abort();
+      activeTranscriptions.clear();
+      assistantTranscriptions.clear();
+      pushToTalkTranscriptions.clear();
+    },
+  });
 
   const existing = await context.secrets.get(SECRET_KEY);
   if (!existing) {
@@ -524,102 +1003,17 @@ function prettifyKey(raw: string): string {
     .join('+');
 }
 
-// ── Dependency checker ───────────────────────────────────────────────────────
-
-/**
- * Per-platform required tools. Keys are bin names; values are human labels
- * shown in the notification. Only bins that are NOT expected to ship
- * pre-installed on that platform are listed (e.g. osascript/pbcopy are
- * omitted on macOS because they are always present).
- */
-function requiredBins(): string[] {
-  if (process.platform === 'darwin') {
-    return ['ffmpeg'];
-  }
-  if (process.platform === 'win32') {
-    return ['ffmpeg'];
-  }
-  // Linux — check audio recorder + the right paste-key tool for the session.
-  const isWayland =
-    Boolean(process.env.WAYLAND_DISPLAY) ||
-    process.env.XDG_SESSION_TYPE === 'wayland';
-  if (isWayland) {
-    return ['ffmpeg', 'ydotool', 'wl-copy'];
-  }
-  return ['ffmpeg', 'xdotool'];
-}
-
-function binExists(bin: string): Promise<boolean> {
-  const cmd = process.platform === 'win32' ? 'where' : 'which';
-  return new Promise((resolve) => {
-    const p = spawn(cmd, [bin], { stdio: 'ignore' });
-    p.on('exit', (code) => resolve(code === 0));
-    p.on('error', () => resolve(false));
+function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
+  if (signal.aborted) return Promise.reject(new DOMException('Aborted', 'AbortError'));
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => {
+      signal.removeEventListener('abort', onAbort);
+      resolve();
+    }, ms);
+    const onAbort = () => {
+      clearTimeout(timer);
+      reject(new DOMException('Aborted', 'AbortError'));
+    };
+    signal.addEventListener('abort', onAbort, { once: true });
   });
-}
-
-/** Returns the absolute path to the platform install script. */
-function installScriptPath(extensionPath: string): string | null {
-  if (process.platform === 'darwin') {
-    return path.join(extensionPath, 'scripts', 'install-mac.sh');
-  }
-  if (process.platform === 'win32') {
-    return path.join(extensionPath, 'scripts', 'install-windows.ps1');
-  }
-  if (process.platform === 'linux') {
-    return path.join(extensionPath, 'scripts', 'install-linux.sh');
-  }
-  return null;
-}
-
-/**
- * Check for missing tools and, if any are absent, show a one-time
- * notification offering to open a terminal that runs the install script.
- * Uses globalState to avoid re-prompting after the user dismisses.
- */
-async function checkDependencies(context: vscode.ExtensionContext): Promise<void> {
-  const SKIP_KEY = 'depsPromptDismissed';
-  if (context.globalState.get<boolean>(SKIP_KEY)) return;
-
-  const bins = requiredBins();
-  const checks = await Promise.all(bins.map(async (b) => ({ bin: b, ok: await binExists(b) })));
-  const missing = checks.filter((c) => !c.ok).map((c) => c.bin);
-
-  if (missing.length === 0) return;
-
-  log('checkDependencies: missing tools:', missing.join(', '));
-
-  const scriptPath = installScriptPath(context.extensionPath);
-
-  const action = scriptPath ? 'Install now' : undefined;
-  const sel = await vscode.window.showWarningMessage(
-    `Voice Input: missing required tool${missing.length > 1 ? 's' : ''}: ${missing.join(', ')}.`,
-    ...(action ? [action] : []),
-    'Dismiss',
-  );
-
-  if (sel === 'Dismiss' || sel === undefined) {
-    // Don't prompt again this install.
-    await context.globalState.update(SKIP_KEY, true);
-    return;
-  }
-
-  if (sel === 'Install now' && scriptPath) {
-    openInstallTerminal(scriptPath);
-  }
-}
-
-/** Open a new terminal and run the install script for the current platform. */
-function openInstallTerminal(scriptPath: string): void {
-  const term = vscode.window.createTerminal({ name: 'Voice Input Setup' });
-  term.show(true /* preserveFocus */);
-
-  if (process.platform === 'win32') {
-    // Escape spaces in path for PowerShell.
-    const escaped = scriptPath.replace(/ /g, '` ');
-    term.sendText(`powershell -ExecutionPolicy Bypass -File "${escaped}"`);
-  } else {
-    // Make the script executable then run it.
-    term.sendText(`bash "${scriptPath}"`);
-  }
 }

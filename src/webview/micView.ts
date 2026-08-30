@@ -16,6 +16,9 @@ export type WebviewMessage =
   | { type: 'refresh-meta' }
   | { type: 'audio-device-change'; deviceId: string }
   | { type: 'audio-device-scan' }
+  | { type: 'assistant-enabled-change'; enabled: boolean }
+  | { type: 'assistant-wake-phrase-change'; wakePhrase: string }
+  | { type: 'assistant-disclosure-acknowledged' }
   | {
       type: 'settings-update';
       speechLang: string;
@@ -38,6 +41,11 @@ export interface ViewState {
   metaError?: string;
   audioDevice: string;
   audioDevices: { id: string; label: string }[];
+  /** Reserved assistant state; the extension host wires these controls. */
+  assistantEnabled?: boolean;
+  assistantListening?: boolean;
+  assistantWakePhrase?: string;
+  assistantDisclosureAcknowledged?: boolean;
 }
 
 export class MicViewProvider implements vscode.WebviewViewProvider {
@@ -142,7 +150,9 @@ const CSS = `
     display: flex;
     flex-direction: column;
     gap: var(--gap);
-    padding: var(--gap);
+    padding-block: var(--gap);
+    padding-inline: var(--gap);
+    min-width: 0;
   }
 
   /* MIC CARD */
@@ -150,14 +160,16 @@ const CSS = `
     background: var(--bg-card);
     border: 1px solid var(--border);
     border-radius: var(--radius);
-    padding: 16px;
+    padding-block: 16px;
+    padding-inline: 16px;
   }
   .mic-card {
     display: flex;
     flex-direction: column;
     align-items: center;
     gap: 10px;
-    padding: 20px 16px;
+    padding-block: 20px;
+    padding-inline: 16px;
   }
   .mic-btn {
     width: 86px;
@@ -235,7 +247,7 @@ const CSS = `
     display: flex;
     align-items: center;
     justify-content: space-between;
-    margin-bottom: 10px;
+    margin-block-end: 10px;
   }
   .section-head h3 {
     margin: 0;
@@ -287,9 +299,9 @@ const CSS = `
   .entry-text {
     font-size: 13px;
     line-height: 1.4;
-    white-space: nowrap;
-    overflow: hidden;
-    text-overflow: ellipsis;
+    white-space: normal;
+    overflow-wrap: anywhere;
+    unicode-bidi: plaintext;
   }
   .entry-meta {
     display: flex;
@@ -321,6 +333,11 @@ const CSS = `
   .icon-btn:hover { background: var(--bg-card); border-color: var(--border); }
   .icon-btn.danger:hover { color: var(--danger); border-color: var(--danger); background: var(--danger-bg); }
   .icon-btn.flash { background: var(--accent); color: var(--accent-fg); }
+
+  :is(button, select, input, summary):focus-visible {
+    outline: 2px solid var(--vscode-focusBorder, var(--accent));
+    outline-offset: 2px;
+  }
 
   .link-btn {
     background: transparent;
@@ -423,6 +440,53 @@ const CSS = `
     align-items: center;
     flex-wrap: wrap;
   }
+  .assistant-section {
+    display: grid;
+    gap: 10px;
+  }
+  .assistant-section .section-head { margin-block-end: 0; }
+  .assistant-status {
+    margin: 0;
+    font-size: 12px;
+    opacity: 0.85;
+  }
+  .assistant-field {
+    display: grid;
+    gap: 4px;
+    min-width: 0;
+    font-size: 11px;
+  }
+  .assistant-field input {
+    min-width: 0;
+    width: 100%;
+    max-width: 100%;
+    padding-block: 5px;
+    padding-inline: 6px;
+    background: var(--bg-soft);
+    color: var(--vscode-input-foreground);
+    border: 1px solid var(--vscode-input-border, var(--border));
+    border-radius: 4px;
+    font: inherit;
+  }
+  .toggle-btn {
+    background: transparent;
+    color: var(--vscode-textLink-foreground, var(--accent));
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding-block: 4px;
+    padding-inline: 8px;
+    cursor: pointer;
+    font: inherit;
+    font-size: 11px;
+  }
+  .toggle-btn.on { background: var(--accent); color: var(--accent-fg); }
+  .assistant-disclosure {
+    border-inline-start: 2px solid var(--border);
+    padding-inline-start: 8px;
+    font-size: 11px;
+    opacity: 0.85;
+  }
+  .assistant-disclosure p { margin-block: 0 6px; }
   .meta-loading {
     display: inline-block;
     margin-inline-start: 6px;
@@ -437,4 +501,20 @@ const CSS = `
   @keyframes spin { to { transform: rotate(360deg); } }
 
   [dir="rtl"] .ts { margin-inline-start: 0; margin-inline-end: auto; }
+
+  @media (max-width: 260px) {
+    #root { padding-inline: 8px; }
+    .card, .section { padding-inline: 10px; }
+    .section-head, .entry-meta { align-items: flex-start; flex-wrap: wrap; }
+    .ts { margin-inline-start: 0; }
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    *, *::before, *::after {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      scroll-behavior: auto !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
 `;

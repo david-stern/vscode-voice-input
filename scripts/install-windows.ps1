@@ -1,5 +1,5 @@
 # Voice Input - Windows dependency installer
-# Run once after installing the extension to get ffmpeg.
+# Audio capture is self-contained; this only verifies optional paste helpers.
 # Requires PowerShell 5+ (ships with Windows 10/11).
 # NOTE: keep this file ASCII-only (no box-drawing, arrows, or em-dashes).
 #       PowerShell 5.1 reads UTF-8 without BOM as ANSI and mis-decodes
@@ -18,36 +18,6 @@ function Test-Cmd($cmd) {
     catch { return $false }
 }
 
-# -- ffmpeg -------------------------------------------------------------------
-if (Test-Cmd "ffmpeg") {
-    $ver = (ffmpeg -version 2>&1 | Select-Object -First 1)
-    Write-Host "  v  ffmpeg already installed ($ver)." -ForegroundColor Green
-} else {
-    Write-Host "->  Installing ffmpeg via winget..." -ForegroundColor Yellow
-
-    # Check winget is available (Windows 10 1709+ / Windows 11)
-    if (-not (Test-Cmd "winget")) {
-        Write-Host ""
-        Write-Host "  x  winget not found." -ForegroundColor Red
-        Write-Host "     Install ffmpeg manually from: https://ffmpeg.org/download.html" -ForegroundColor Yellow
-        Write-Host "     Or install the 'App Installer' package from the Microsoft Store." -ForegroundColor Yellow
-        exit 1
-    }
-
-    winget install --id Gyan.FFmpeg --accept-source-agreements --accept-package-agreements
-
-    # Refresh PATH in current session so we can verify immediately
-    $env:Path = [System.Environment]::GetEnvironmentVariable("Path","Machine") + ";" +
-                [System.Environment]::GetEnvironmentVariable("Path","User")
-
-    if (Test-Cmd "ffmpeg") {
-        Write-Host "  v  ffmpeg installed successfully." -ForegroundColor Green
-    } else {
-        Write-Host "  !  ffmpeg installed but not yet on PATH." -ForegroundColor Yellow
-        Write-Host "     Restart your terminal or VSCode for PATH to update." -ForegroundColor Yellow
-    }
-}
-
 # -- Built-ins check ----------------------------------------------------------
 Write-Host ""
 Write-Host "Built-in tools (no install needed):"
@@ -62,8 +32,6 @@ foreach ($bin in @("powershell", "clip")) {
 Write-Host ""
 Write-Host "======================================================" -ForegroundColor Cyan
 Write-Host "  All done!" -ForegroundColor Cyan
-Write-Host "  If ffmpeg was just installed, restart VSCode so PATH is refreshed." -ForegroundColor Cyan
-Write-Host "  Find your audio device name with:" -ForegroundColor Cyan
-Write-Host "    ffmpeg -hide_banner -list_devices true -f dshow -i dummy" -ForegroundColor Cyan
+Write-Host "  Audio recording is bundled with the extension." -ForegroundColor Cyan
 Write-Host "======================================================" -ForegroundColor Cyan
 Write-Host ""

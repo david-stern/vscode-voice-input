@@ -30,7 +30,6 @@ else
   echo ""
   echo "✗  Unsupported package manager."
   echo "   Please install the following packages manually:"
-  echo "   • ffmpeg"
   if [[ "$SESSION" == "wayland" ]]; then
     echo "   • ydotool   (+ enable ydotoold systemd service)"
     echo "   • wl-clipboard  (provides wl-copy)"
@@ -44,14 +43,14 @@ echo "Package manager: $PM"
 echo ""
 
 # ── Build package list ───────────────────────────────────────────────────────
-PKGS_APT_WAYLAND=(ffmpeg ydotool wl-clipboard)
-PKGS_APT_X11=(ffmpeg xdotool xclip)
-PKGS_DNF_WAYLAND=(ffmpeg ydotool wl-clipboard)
-PKGS_DNF_X11=(ffmpeg xdotool xclip)
-PKGS_PAC_WAYLAND=(ffmpeg ydotool wl-clipboard)
-PKGS_PAC_X11=(ffmpeg xdotool xclip)
-PKGS_ZYP_WAYLAND=(ffmpeg ydotool wl-clipboard)
-PKGS_ZYP_X11=(ffmpeg xdotool xclip)
+PKGS_APT_WAYLAND=(ydotool wl-clipboard)
+PKGS_APT_X11=(xdotool xclip)
+PKGS_DNF_WAYLAND=(ydotool wl-clipboard)
+PKGS_DNF_X11=(xdotool xclip)
+PKGS_PAC_WAYLAND=(ydotool wl-clipboard)
+PKGS_PAC_X11=(xdotool xclip)
+PKGS_ZYP_WAYLAND=(ydotool wl-clipboard)
+PKGS_ZYP_X11=(xdotool xclip)
 
 install_packages() {
   local pkgs=("$@")
@@ -117,11 +116,11 @@ fi
 # ── Verify ───────────────────────────────────────────────────────────────────
 echo ""
 echo "Installed tool check:"
-REQUIRED_BINS=(ffmpeg)
+REQUIRED_BINS=()
 if [[ "$SESSION" == "wayland" ]]; then
   REQUIRED_BINS+=(ydotool wl-copy)
 else
-  REQUIRED_BINS+=(xdotool)
+  REQUIRED_BINS+=(xdotool xclip)
 fi
 
 ALL_OK=true

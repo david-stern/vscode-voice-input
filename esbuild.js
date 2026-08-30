@@ -1,4 +1,5 @@
 const esbuild = require('esbuild');
+const fs = require('fs');
 const path = require('path');
 
 const watch = process.argv.includes('--watch');
@@ -6,6 +7,13 @@ const watch = process.argv.includes('--watch');
 const ctxs = [];
 
 async function build() {
+  const licenseDir = path.join(__dirname, 'out', 'licenses');
+  fs.mkdirSync(licenseDir, { recursive: true });
+  fs.copyFileSync(
+    path.join(__dirname, 'src', 'recorder', 'PICOVOICE-LICENSE.txt'),
+    path.join(licenseDir, 'PICOVOICE-LICENSE.txt'),
+  );
+
   const ext = await esbuild.context({
     entryPoints: ['src/extension.ts'],
     bundle: true,
@@ -13,7 +21,9 @@ async function build() {
     platform: 'node',
     target: 'node18',
     format: 'cjs',
-    external: ['vscode'],
+    // Keep the native recorder package intact so its platform-specific
+    // `.node` binaries are resolved relative to the package at runtime.
+    external: ['vscode', '@picovoice/pvrecorder-node'],
     sourcemap: true,
     logLevel: 'info',
   });

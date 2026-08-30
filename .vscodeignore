@@ -1,8 +1,13 @@
 .vscode/**
 src/**
-node_modules/**
+node_modules/*
+!node_modules/@picovoice
+node_modules/@picovoice/*
+!node_modules/@picovoice/pvrecorder-node
 .gitignore
 .eslintrc.json
+eslint.config.mjs
+.omc/**
 esbuild.js
 tsconfig.json
 **/*.map

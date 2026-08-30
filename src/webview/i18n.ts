@@ -39,6 +39,15 @@ export interface Strings {
   settingsAudioDevice: string;
   audioDeviceDefault: string;
   audioDeviceScan: string;
+  assistant: string;
+  assistantEnabled: string;
+  assistantDisabled: string;
+  assistantListening: string;
+  assistantReady: string;
+  assistantWakePhrase: string;
+  assistantWakePhraseHint: string;
+  assistantDisclosure: string;
+  assistantDisclosureAcknowledge: string;
 }
 
 export const STRINGS: Record<UiLang, Strings> = {
@@ -81,6 +90,15 @@ export const STRINGS: Record<UiLang, Strings> = {
     settingsAudioDevice: 'מקור שמע',
     audioDeviceDefault: 'ברירת מחדל של המערכת',
     audioDeviceScan: 'סרוק',
+    assistant: 'עוזר קולי',
+    assistantEnabled: 'הפעלת העוזר הקולי',
+    assistantDisabled: 'העוזר הקולי כבוי',
+    assistantListening: 'העוזר הקולי מאזין',
+    assistantReady: 'העוזר הקולי מוכן',
+    assistantWakePhrase: 'ביטוי הפעלה',
+    assistantWakePhraseHint: 'למשל: היי עוזר',
+    assistantDisclosure: 'כאשר העוזר הקולי מאזין, מקטעי דיבור שהושלמו נשלחים ל‑Soniox לתמלול. ביטוי ההפעלה נבדק לאחר התמלול; שקט נשאר מקומי.',
+    assistantDisclosureAcknowledge: 'הבנתי',
   },
   en: {
     appTitle: 'Voice Input',
@@ -121,5 +139,14 @@ export const STRINGS: Record<UiLang, Strings> = {
     settingsAudioDevice: 'Audio device',
     audioDeviceDefault: 'System default',
     audioDeviceScan: 'Scan',
+    assistant: 'Voice assistant',
+    assistantEnabled: 'Enable voice assistant',
+    assistantDisabled: 'Voice assistant is off',
+    assistantListening: 'Voice assistant is listening',
+    assistantReady: 'Voice assistant is ready',
+    assistantWakePhrase: 'Wake phrase',
+    assistantWakePhraseHint: 'For example: Hey Assistant',
+    assistantDisclosure: 'When the voice assistant is listening, completed speech segments are sent to Soniox for transcription. The wake phrase is checked after transcription; silence stays local.',
+    assistantDisclosureAcknowledge: 'I understand',
   },
 };

@@ -1,6 +1,6 @@
 # Voice Input — Soniox STT for VSCode
 
-Push-to-talk voice-to-text that works in **any** input across VSCode — code editor, GitHub Copilot Chat, Claude Code chat, terminals, settings forms. Audio is captured natively (no flaky webview microphone), transcribed via the Soniox STT API, and pasted into the focused element.
+Push-to-talk voice-to-text for desktop VS Code — code editors, GitHub Copilot Chat, Claude Code chat, ChatGPT chat, terminals, and settings forms. Audio is captured by the bundled Picovoice PvRecorder library, transcribed through the Soniox STT API, and inserted or pasted into the focused element. No `ffmpeg` installation is needed for capture.
 
 Hebrew is the default language. The full UI is bilingual (he / en) with native RTL support.
 
@@ -10,14 +10,16 @@ Hebrew is the default language. The full UI is bilingual (he / en) with native R
 
 - **Background recording.** Toggles recording from anywhere (default: `Alt+M` on Linux/Win, `Ctrl+Alt+M` on macOS) — customizable in sidebar, shows your configured shortcut dynamically.
 - **Universal injection.** Editor → cursor insertion. Chat webviews / panels → clipboard + `Ctrl+V` simulated via `ydotool`. Works around VSCode's webview microphone block.
-- **Audio device selection.** `Voice Input: Select Audio Device` lists every available microphone on the current platform and lets you pick one with a QuickPick. The selection is saved to `voiceInput.audioDevice`. On Linux the list updates instantly when a USB mic is plugged or unplugged; on macOS/Windows it refreshes automatically within seconds.
+- **Audio device selection.** `Voice Input: Select Audio Device` lists every available microphone on the current platform and saves a stable identity to `voiceInput.audioDevice`. Use **Scan** to refresh after plugging or unplugging a device; the short-lived cache also refreshes within seconds.
+- **Opt-in assistant listening.** Explicitly start an assistant session from the sidebar or Command Palette. Local silence detection sends only completed speech segments to Soniox, requires one-time modal consent, and stops when VS Code closes. It never starts automatically and never submits a chat message.
+- **Safe wake actions.** After a Hebrew or English wake phrase, the assistant can open VS Code Chat, toggle the terminal, open Voice Input settings, or stop listening. Any other post-wake text is append-only insertion/paste.
 - **No-device guard.** If no audio input source is detected when you try to start a recording, the extension blocks the attempt and offers a **Select Device** button instead of surfacing a cryptic recorder error.
 - **Speech history.** Every transcription is saved with timestamp + language. One-click copy or delete per entry. Configurable TTL (1 day / 7 days / 30 days / forever).
 - **In-panel settings.** Speech language, UI language, history TTL, Soniox model, recording shortcut, API key — all editable from the sidebar without leaving the editor.
 - **Bilingual UI.** Hebrew (default) and English with automatic RTL/LTR layout.
 - **Secure key storage.** `SONIOX_API_KEY` is held in VSCode `SecretStorage`, never in `settings.json`.
 - **Append-only.** Never overwrites a selection, never auto-submits a chat message.
-- **Diagnostics built-in.** Output channel logs every step; one command dumps environment + tool availability.
+- **Diagnostics built-in.** Output channel reports environment, native device enumeration, and paste-helper availability without logging audio or transcript content.
 
 ---
 
@@ -39,19 +41,20 @@ To change a binding by hand: `Ctrl+K Ctrl+S` → search `voiceInput.toggleRecord
 
 | OS | Audio capture | Paste-key | Clipboard | Setup effort |
 |---|---|---|---|---|
-| **Linux Wayland** (GNOME/KDE/Sway) | `ffmpeg` (PulseAudio/PipeWire) | `ydotool` + system daemon | `wl-copy` | one-time daemon setup |
-| **Linux X11** | `ffmpeg` (PulseAudio) | `xdotool` | `xclip` (or VSCode clipboard) | install packages |
-| **macOS** | `ffmpeg` (avfoundation) | `osascript` (built-in) | `pbcopy` (built-in) | one Homebrew install |
-| **Windows** | `ffmpeg` (DirectShow) | `powershell` SendKeys (built-in) | `clip.exe` (built-in) | install ffmpeg only |
+| **Linux Wayland** (GNOME/KDE/Sway) | bundled PvRecorder target | `ydotool` + system daemon | `wl-copy` | paste helpers only |
+| **Linux X11** | bundled PvRecorder target | `xdotool` | VS Code clipboard | paste helper only |
+| **macOS** | bundled PvRecorder target | `osascript` (built-in) | `pbcopy` (built-in) | grant microphone permission |
+| **Windows** | bundled PvRecorder target | PowerShell SendKeys (built-in) | VS Code clipboard | grant microphone permission |
 
-The extension auto-detects the active platform and chooses the right backend at runtime — no per-platform config needed.
+This is a desktop VS Code extension. Browser-hosted VS Code, `vscode.dev`, and Codespaces web extension hosts are not supported. In Remote/SSH/WSL windows the UI extension runs locally and uses the desktop microphone.
+
+The package contains recorder targets for supported Linux, macOS, and Windows architectures. The automated checks in this repository do not replace real microphone-permission, capture, and exact-paste validation on every OS/architecture.
 
 ## Requirements
 
 | Component | Why |
 |---|---|
 | **Soniox API key** | The STT backend. Get one at [soniox.com](https://soniox.com). Set via the sidebar **Set Soniox API key** button or `Voice Input: Set Soniox API Key`. |
-| **`ffmpeg`** | Native microphone capture on every OS. Linux can also use `parecord` / `arecord`; macOS can also use `sox` / `rec`. |
 | **`ydotool` + `ydotoold` daemon** (Linux Wayland) | Simulates `Ctrl+V` to paste into chat webviews. GNOME Wayland blocks `wtype`, so `ydotool` is the reliable choice. |
 | **`wl-clipboard`** (Linux Wayland) | `wl-copy` writes directly to the Wayland clipboard, bypassing VSCode's clipboard sandbox latency. Strongly recommended on Wayland. |
 | `wtype` / `xdotool` | Alternative paste-key tools auto-detected when present. |
@@ -59,18 +62,14 @@ The extension auto-detects the active platform and chooses the right backend at 
 
 ### One-time setup on macOS
 
-```bash
-brew install ffmpeg
-```
-
-That's it. `osascript` and `pbcopy` come with macOS. After installing the extension, grant **VSCode** microphone access in **System Settings → Privacy & Security → Microphone** (the OS will prompt on first recording).
+After installing the extension, grant **VS Code** microphone access in **System Settings → Privacy & Security → Microphone** (the OS will prompt on first recording). `osascript` and `pbcopy` come with macOS.
 
 The recording shortcut on macOS is `Ctrl+Alt+M` (`Ctrl+Option+M`). Paste uses `Cmd+V` automatically.
 
 ### One-time setup on Linux Wayland (Ubuntu / Debian)
 
 ```bash
-sudo apt install ffmpeg ydotool wl-clipboard
+sudo apt install ydotool wl-clipboard
 
 sudo tee /etc/systemd/system/ydotoold.service >/dev/null <<EOF
 [Unit]
@@ -94,20 +93,12 @@ The extension reads `/tmp/.ydotool_socket` automatically.
 ### One-time setup on Linux X11
 
 ```bash
-sudo apt install ffmpeg xdotool xclip
+sudo apt install xdotool
 ```
 
 ### One-time setup on Windows
 
-```powershell
-winget install Gyan.FFmpeg
-```
-
-`powershell` and `clip.exe` ship with Windows. After install, restart your shell so `ffmpeg` is on PATH. The extension auto-detects the first DirectShow audio device; override with `voiceInput.audioDevice` in settings (e.g. `Microphone (Realtek)`). Find your device name with:
-
-```powershell
-ffmpeg -hide_banner -list_devices true -f dshow -i dummy
-```
+Grant desktop VS Code microphone permission when Windows prompts. PowerShell ships with Windows; no audio-capture executable is required.
 
 ---
 
@@ -121,6 +112,8 @@ ffmpeg -hide_banner -list_devices true -f dshow -i dummy
 6. Press **`Alt+M`** (Linux/Win) or **`Ctrl+Alt+M`** (macOS) to start recording — the status bar turns red.
 7. Press the shortcut again — the transcript is pasted at the cursor and saved to history.
 8. The Voice Input view shows the full history with copy / delete buttons.
+
+For assistant listening, use **Voice Input: Toggle Assistant Listening** or the sidebar control. The first start shows a modal disclosure. Listening remains active only while desktop VS Code is running and only after that explicit start; reloading or reopening VS Code does not restart it. Say a built-in Hebrew/English wake phrase (or configure your own) before a safe action or text to paste.
 
 ---
 
@@ -136,6 +129,7 @@ Configurable from both the in-panel **Settings** section (collapsible) and `sett
 | `voiceInput.sttModel` | Soniox model id | `stt-async-v4` |
 | `voiceInput.injectionMode` | `auto`, `paste-key`, `type-key`, `editor-only`, `clipboard-only` | `auto` |
 | `voiceInput.audioDevice` | Device id (see **Select Audio Device**) or `""` for system default | `""` |
+| `voiceInput.assistantWakePhrase` | Custom phrase, or `""` for the built-in Hebrew/English phrases | `""` |
 
 To pick a device interactively run **`Voice Input: Select Audio Device`** from the Command Palette — it enumerates all available inputs and writes the chosen id to `voiceInput.audioDevice` automatically.
 
@@ -150,19 +144,22 @@ All available from the Command Palette (`Ctrl+Shift+P`):
 | Command | Default keybinding |
 |---|---|
 | `Voice Input: Toggle Recording` | `Alt+M` (Linux/Win) · `Ctrl+Alt+M` (macOS) |
+| `Voice Input: Toggle Assistant Listening` | — |
 | `Voice Input: Select Audio Device` | — |
 | `Voice Input: Set Soniox API Key` | — |
 | `Voice Input: Clear Soniox API Key` | — |
 | `Voice Input: Clear History` | — |
 | `Voice Input: Show Diagnostics` | — |
 
-`Show Diagnostics` opens the Output panel and logs: extension version, session type (Wayland / X11), availability of `ffmpeg` / `ydotool` / `wl-copy`, and `ydotool` socket state. Use it whenever paste or recording misbehaves.
+`Show Diagnostics` opens the Output panel and logs the extension version, desktop session, native microphone count, paste-helper availability, and `ydotool` socket state. It does not log audio or transcript content.
 
 ---
 
 ## Why two paths for injection?
 
-VSCode webviews (used by Claude Code chat, etc.) are sandboxed and reject `getUserMedia` and any programmatic text injection from other extensions. The workaround is OS-level: capture audio via `ffmpeg` from the PulseAudio default source, then simulate a real `Ctrl+V` keystroke against the focused window so the chat input handles paste like any other clipboard event. Editors get the cleaner path via `vscode.TextEditor.edit`.
+VS Code webviews used by Claude, ChatGPT, and GitHub Copilot are sandboxed from other extensions. Voice Input captures through its bundled native recorder, preserves the exact Hebrew/Unicode text on the clipboard, and simulates a normal paste into the focused vendor input. It never presses Enter. Editors use the supported `vscode.TextEditor.edit` path.
+
+The Voice Input sidebar can render its own transcript history with automatic RTL/LTR direction. VS Code does not expose supported APIs for restyling the sandboxed DOM owned by Claude, ChatGPT, or Copilot, so this extension can guarantee exact Hebrew paste but cannot force those vendors' chat inputs or messages to adopt RTL styling.
 
 ---
 
@@ -170,11 +167,11 @@ VSCode webviews (used by Claude Code chat, etc.) are sandboxed and reject `getUs
 
 | Symptom | Likely cause | Fix |
 |---|---|---|
-| Status bar says "no audio recorder found" | `ffmpeg` not on PATH | `sudo apt install ffmpeg` |
+| Status bar says the bundled recorder could not load | Unsupported/incorrect native package in the installed VSIX | Reinstall the extension package for your desktop OS/architecture and run **Show Diagnostics**. |
 | Status bar says "paste failed" | `ydotoold` not running | `sudo systemctl status ydotoold` and re-enable per setup section |
 | Random ASCII / `?` characters appear in chat instead of text | VSCode is running an old build of the extension | `Developer: Reload Window`; verify version with `Voice Input: Show Diagnostics` |
 | Hebrew comes back as gibberish from Soniox | Wrong language hint | Set **Speech language** to `he` in the panel |
-| Recording stops immediately | Default mic is a monitor source | Run `Voice Input: Select Audio Device` and pick a real input (not a `monitor`) |
+| Recording stops immediately | Selected microphone is unavailable or permission was denied | Grant desktop VS Code microphone permission, then run `Voice Input: Select Audio Device`. |
 | "No audio input source found" when pressing `Alt+M` | No microphone connected or detected | Plug in a microphone, then run `Voice Input: Select Audio Device` |
 
 ---
@@ -183,37 +180,10 @@ VSCode webviews (used by Claude Code chat, etc.) are sandboxed and reject `getUs
 
 See [CHANGELOG.md](CHANGELOG.md) for the full history.
 
-### v1.0.7
-- **Feat:** Audio device selector is now **embedded in the extension sidebar Settings section** — a dropdown lists all detected microphones with a ↺ Scan button to refresh the list without leaving the panel. The same setting is also editable in the standard VSCode Settings UI (`voiceInput.audioDevice`).
-
-### v1.0.6
-- **Feat:** `Voice Input: Select Audio Device` command — enumerates all microphones on the current platform (PulseAudio/PipeWire on Linux, AVFoundation on macOS, DirectShow on Windows) and lets you pick one from a QuickPick. Selection is saved to `voiceInput.audioDevice`.
-- **Feat:** Dynamic device list refresh. On Linux the extension watches `/dev/snd/` with a filesystem watcher so plug/unplug events are reflected immediately. On macOS/Windows the cache has a 5-second TTL so stale data is never shown for more than a few seconds.
-- **Feat:** No-device guard — if no audio input is detected when starting a recording, the attempt is blocked with a clear error and a **Select Device** shortcut instead of a cryptic recorder failure message.
-
-### v1.0.5
-- **Fix:** Added missing `icon` property to the microphone webview panel — resolves VSCode manifest validation warning.
-
-### v1.0.4
-- **Feat:** The hint text below the mic button ("or press … to toggle") now displays your **currently configured keyboard shortcut** dynamically. Changing the binding via the VSCode Keyboard Shortcuts editor is reflected immediately — no hardcoded `Alt+M` in the UI.
-- macOS shows `Ctrl+Alt+M` by default; Linux/Win show `Alt+M`.
-
-### v1.0.3
-- **Fix:** Settings dropdowns no longer overflow the sidebar panel width at narrow sizes.
-
-### v1.0.2
-- **Fix:** `Alt+M` now works when the Voice Input sidebar panel has keyboard focus. Previously the keydown event was silently swallowed by the webview browser context with no handler, so the shortcut had no effect. A `keydown`/`keyup` listener pair is now registered in the webview — keydown suppresses the default action, keyup fires the toggle.
-- **Behaviour:** When triggered from within the webview, the toggle fires on **key release** (`keyup`) rather than keydown, avoiding repeated triggers from key-repeat.
-
-### v1.0.1
-- Added MIT `LICENSE` file and `repository` field to `package.json`.
-
-### v0.3.6
-- Platform install scripts (`scripts/install-linux.sh`, `install-mac.sh`, `install-windows.ps1`).
-- Auto dependency check on activation — surfaces a notification if `ffmpeg`, `ydotool`, or clipboard tools are missing.
-
-### v0.3.5
-- Initial release: push-to-talk recording, Soniox STT, universal injection, bilingual UI (he/en), speech history, secure API key storage, sidebar settings panel.
+### Unreleased
+- **Audio:** Bundled Picovoice PvRecorder capture replaces external audio-recording executables; desktop VS Code uses the local microphone and no longer needs `ffmpeg` for capture.
+- **Assistant:** Explicit, consented listening sessions with local speech segmentation, bounded transcription work, allowlisted VS Code actions, wake phrases, visible state, and no chat auto-submit.
+- **Privacy/RTL:** Best-effort Soniox remote cleanup, content-free diagnostics, exact Unicode paste, and clearer sandboxed vendor-webview limits.
 
 ---
 

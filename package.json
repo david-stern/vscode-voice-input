@@ -14,6 +14,9 @@
   "engines": {
     "vscode": "^1.90.0"
   },
+  "extensionKind": [
+    "ui"
+  ],
   "os": [
     "darwin",
     "linux",
@@ -52,6 +55,10 @@
         "command": "voiceInput.toggleRecording",
         "title": "Voice Input: Toggle Recording",
         "icon": "$(mic)"
+      },
+      {
+        "command": "voiceInput.toggleAssistant",
+        "title": "Voice Input: Toggle Assistant Listening"
       },
       {
         "command": "voiceInput.setApiKey",
@@ -101,7 +108,12 @@
         "voiceInput.audioDevice": {
           "type": "string",
           "default": "",
-          "description": "Audio input device override. Use 'Voice Input: Select Audio Device' (Command Palette or the Settings section in the Voice Input sidebar) to pick from detected devices. Windows: DirectShow device name (e.g. 'Microphone (Realtek)'). macOS: AVFoundation index (e.g. ':1'). Linux: PulseAudio source name. Empty = system default."
+          "description": "Audio input device identifier managed by 'Voice Input: Select Audio Device' in the Command Palette or sidebar. Empty uses the system default."
+        },
+        "voiceInput.assistantWakePhrase": {
+          "type": "string",
+          "default": "",
+          "description": "Optional assistant wake phrase. Empty uses the built-in Hebrew and English wake phrases."
         },
         "voiceInput.historyTtlDays": {
           "type": "number",
@@ -140,6 +152,7 @@
     "watch": "node esbuild.js --watch",
     "compile": "tsc -p ./",
     "lint": "eslint src --ext ts",
+    "test": "tsx --test test/*.test.ts test/**/*.test.ts",
     "publish": "bash scripts/release.sh"
   },
   "devDependencies": {
@@ -149,6 +162,10 @@
     "@typescript-eslint/parser": "^8.59.3",
     "esbuild": "^0.20.0",
     "eslint": "^10.3.0",
+    "tsx": "4.23.13",
     "typescript": "^5.4.0"
+  },
+  "dependencies": {
+    "@picovoice/pvrecorder-node": "1.2.9"
   }
 }

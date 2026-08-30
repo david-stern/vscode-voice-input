@@ -1,5 +1,5 @@
 import * as vscode from 'vscode';
-import { spawn } from 'child_process';
+import { spawn, spawnSync } from 'child_process';
 import { pickTypeTool, runTool } from './keypaste';
 import { log } from './log';
 
@@ -18,7 +18,9 @@ export type InjectionMode = 'auto' | 'editor-only' | 'clipboard-only' | 'paste-k
 export async function injectText(text: string, mode: InjectionMode = 'auto'): Promise<void> {
   if (!text) return;
 
-  log('inject:', { mode, len: text.length, sample: text.slice(0, 40) });
+  // Transcripts may contain sensitive content. Keep diagnostics useful without
+  // retaining any text in logs.
+  log('inject:', { mode, len: text.length });
 
   if (mode === 'editor-only') {
     const editor = vscode.window.activeTextEditor;
@@ -93,14 +95,28 @@ async function clipboardPasteKey(text: string) {
     return;
   }
 
+  // Simulated input is sent to the focused OS application. Do not risk
+  // pasting a transcript into another app when VS Code has lost focus.
+  if (!vscode.window.state.focused) {
+    log('paste-key aborted: VS Code not focused');
+    notifyClip(text, '(VS Code is not focused)');
+    return;
+  }
+
   // Wait for clipboard manager to settle. Wayland sometimes needs >100ms.
   await new Promise((r) => setTimeout(r, 200));
+
+  if (!vscode.window.state.focused) {
+    log('paste-key aborted after clipboard wait: VS Code not focused');
+    notifyClip(text, '(VS Code is not focused)');
+    return;
+  }
 
   try {
     await runTool(tool, tool.pasteArgs());
     log('paste-key sent ok');
     vscode.window.setStatusBarMessage(
-      `$(check) Voice: pasted "${trim(text)}"`,
+      '$(check) Voice: pasted.',
       3000,
     );
   } catch (e) {
@@ -112,22 +128,18 @@ async function clipboardPasteKey(text: string) {
     );
   }
 
-  setTimeout(() => {
-    void Promise.resolve(vscode.env.clipboard.writeText(prev)).catch(() => {});
-    if (process.platform === 'darwin' && hasPbcopy()) {
-      const p = spawn('pbcopy', { stdio: ['pipe', 'ignore', 'ignore'] });
-      p.stdin.end(prev);
-    } else if (process.platform === 'win32' && hasClipExe()) {
-      const p = spawn('clip', { stdio: ['pipe', 'ignore', 'ignore'] });
-      p.stdin.end(prev);
-    } else if (hasWlCopy()) {
-      const p = spawn('wl-copy', { stdio: ['pipe', 'ignore', 'ignore'] });
-      p.stdin.end(prev);
-    }
-  }, 1800);
+  setTimeout(() => void restoreClipboardIfUnchanged(prev, text), 1800);
 }
 
 async function directType(text: string) {
+  // Character injection tools depend on the active keyboard layout. Clipboard
+  // paste preserves Hebrew and other RTL Unicode text exactly.
+  if (containsRtlText(text)) {
+    log('direct type redirected to clipboard paste for RTL text');
+    await clipboardPasteKey(text);
+    return;
+  }
+
   const tool = await pickTypeTool();
   if (!tool) {
     await writeClipboard(text);
@@ -144,6 +156,17 @@ async function directType(text: string) {
 }
 
 async function writeClipboard(text: string): Promise<void> {
+  // The VS Code clipboard API is the most reliable path on Windows. In
+  // particular it avoids code-page conversion through clip.exe.
+  if (process.platform === 'win32') {
+    try {
+      await vscode.env.clipboard.writeText(text);
+      log('clipboard via vscode.env on Windows ok');
+      return;
+    } catch (e) {
+      log('vscode clipboard on Windows failed, falling back:', (e as Error).message);
+    }
+  }
   if (process.platform === 'darwin' && hasPbcopy()) {
     try {
       await spawnPipe('pbcopy', [], text);
@@ -175,6 +198,21 @@ async function writeClipboard(text: string): Promise<void> {
   log('clipboard via vscode.env ok');
 }
 
+async function restoreClipboardIfUnchanged(previous: string, voiceText: string): Promise<void> {
+  try {
+    // Preserve a clipboard change the user (or another application) made after
+    // the voice paste. This comparison intentionally happens at restore time.
+    if ((await vscode.env.clipboard.readText()) !== voiceText) {
+      log('clipboard changed; skipping restore');
+      return;
+    }
+    await writeClipboard(previous);
+    log('clipboard restored');
+  } catch (e) {
+    log('clipboard restore check failed:', (e as Error).message);
+  }
+}
+
 function spawnPipe(bin: string, args: string[], input: string): Promise<void> {
   return new Promise<void>((resolve, reject) => {
     const p = spawn(bin, args, { stdio: ['pipe', 'ignore', 'pipe'] });
@@ -195,7 +233,7 @@ function hasPbcopy(): boolean {
   if (!_pbcopyChecked) {
     _pbcopyChecked = true;
     try {
-      const p = require('child_process').spawnSync('which', ['pbcopy'], { stdio: 'ignore' });
+      const p = spawnSync('which', ['pbcopy'], { stdio: 'ignore' });
       _pbcopyOk = p.status === 0;
     } catch {
       _pbcopyOk = false;
@@ -211,7 +249,7 @@ function hasClipExe(): boolean {
   if (!_clipChecked) {
     _clipChecked = true;
     try {
-      const p = require('child_process').spawnSync('where', ['clip'], { stdio: 'ignore' });
+      const p = spawnSync('where', ['clip'], { stdio: 'ignore' });
       _clipOk = p.status === 0;
     } catch {
       _clipOk = false;
@@ -228,7 +266,7 @@ function hasWlCopy(): boolean {
     _wlCopyChecked = true;
     try {
       // synchronous check via a fast spawn
-      const p = require('child_process').spawnSync('which', ['wl-copy'], { stdio: 'ignore' });
+      const p = spawnSync('which', ['wl-copy'], { stdio: 'ignore' });
       _wlCopyOk = p.status === 0;
     } catch {
       _wlCopyOk = false;
@@ -238,13 +276,15 @@ function hasWlCopy(): boolean {
   return _wlCopyOk;
 }
 
-function trim(t: string): string {
-  return t.length > 40 ? t.slice(0, 40) + '…' : t;
+function containsRtlText(text: string): boolean {
+  // Hebrew, Arabic, Syriac, Thaana and presentation/bidi controls use RTL
+  // directionality and should never be sent through layout-dependent typing.
+  return /[\u0590-\u08FF\u200F\u202B\u202E\u2067\u2068\uFB1D-\uFEFC]/u.test(text);
 }
 
-function notifyClip(text: string, suffix = '') {
+function notifyClip(_text: string, suffix = '') {
   vscode.window.setStatusBarMessage(
-    `Voice Input: "${trim(text)}" copied — Ctrl+V to paste ${suffix}`,
+    `Voice Input: copied — Ctrl+V to paste ${suffix}`,
     6000,
   );
 }

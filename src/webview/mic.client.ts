@@ -30,6 +30,10 @@ interface InitState {
   metaError?: string;
   audioDevice: string;
   audioDevices: { id: string; label: string }[];
+  assistantEnabled?: boolean;
+  assistantListening?: boolean;
+  assistantWakePhrase?: string;
+  assistantDisclosureAcknowledged?: boolean;
 }
 
 const vscode = acquireVsCodeApi();
@@ -47,6 +51,10 @@ let state: InitState = {
   metaLoading: false,
   audioDevice: '',
   audioDevices: [],
+  assistantEnabled: false,
+  assistantListening: false,
+  assistantWakePhrase: '',
+  assistantDisclosureAcknowledged: false,
 };
 
 function t(): Strings {
@@ -59,11 +67,12 @@ function dir(): 'rtl' | 'ltr' {
 
 function fmtTime(ts: number): string {
   const d = new Date(ts);
-  const pad = (n: number) => n.toString().padStart(2, '0');
-  const sameDay =
-    new Date().toDateString() === d.toDateString();
-  if (sameDay) return `${pad(d.getHours())}:${pad(d.getMinutes())}`;
-  return `${d.getMonth() + 1}/${d.getDate()} ${pad(d.getHours())}:${pad(d.getMinutes())}`;
+  const locale = state.uiLang === 'he' ? 'he-IL' : 'en-US';
+  const sameDay = new Date().toDateString() === d.toDateString();
+  return new Intl.DateTimeFormat(locale, sameDay
+    ? { hour: '2-digit', minute: '2-digit' }
+    : { month: 'short', day: 'numeric', hour: '2-digit', minute: '2-digit' },
+  ).format(d);
 }
 
 function escapeHtml(s: string): string {
@@ -89,13 +98,14 @@ function render() {
   root.innerHTML = `
     <div class="card mic-card">
       <button id="mic" class="mic-btn ${state.recording ? 'recording' : ''}"
-              title="${escapeHtml(t().holdHint)}">
+              type="button" aria-label="${escapeHtml(t().holdHint)}"
+              aria-pressed="${state.recording}" title="${escapeHtml(t().holdHint)}">
         <svg viewBox="0 0 24 24" width="48" height="48" fill="currentColor" aria-hidden="true">
           <path d="M12 2a3 3 0 0 0-3 3v6a3 3 0 0 0 6 0V5a3 3 0 0 0-3-3zm-7 9a7 7 0 0 0 6 6.92V21h2v-3.08A7 7 0 0 0 19 11h-2a5 5 0 0 1-10 0H5z"/>
         </svg>
       </button>
-      <div class="status">
-        <span class="status-dot ${state.recording ? 'on' : ''}"></span>
+      <div class="status" role="status" aria-live="polite">
+        <span class="status-dot ${state.recording ? 'on' : ''}" aria-hidden="true"></span>
         <span id="status-text">${state.recording ? escapeHtml(t().recording) : escapeHtml(t().idle)}</span>
       </div>
       <div class="hint">${escapeHtml(t().holdHint)} · ${escapeHtml(t().pressKeyHint)} <code class="hint-key">${escapeHtml(state.keybinding)}</code> ${escapeHtml(t().toToggle)}</div>
@@ -104,7 +114,7 @@ function render() {
     <div class="section">
       <div class="section-head">
         <h3>${escapeHtml(t().history)} <span class="count">${state.history.length}</span></h3>
-        <button class="link-btn danger" id="clear-all"
+        <button class="link-btn danger" id="clear-all" type="button" aria-label="${escapeHtml(t().clearAll)}"
           ${state.history.length === 0 ? 'disabled' : ''}>${escapeHtml(t().clearAll)}</button>
       </div>
       <div id="history" class="history-list">
@@ -115,6 +125,32 @@ function render() {
         }
       </div>
     </div>
+
+    <section class="section assistant-section" aria-labelledby="assistant-heading">
+      <div class="section-head">
+        <h3 id="assistant-heading">${escapeHtml(t().assistant)}</h3>
+        <button id="assistant-enabled" class="toggle-btn ${state.assistantEnabled ? 'on' : ''}" type="button"
+          aria-pressed="${!!state.assistantEnabled}">
+          ${escapeHtml(t().assistantEnabled)}
+        </button>
+      </div>
+      <p class="assistant-status" role="status" aria-live="polite">
+        ${escapeHtml(state.assistantListening
+          ? t().assistantListening
+          : state.assistantEnabled ? t().assistantReady : t().assistantDisabled)}
+      </p>
+      <label class="assistant-field" for="assistant-wake-phrase">
+        <span>${escapeHtml(t().assistantWakePhrase)}</span>
+        <input id="assistant-wake-phrase" type="text" value="${escapeHtml(state.assistantWakePhrase ?? '')}"
+          placeholder="${escapeHtml(t().assistantWakePhraseHint)}" autocomplete="off" spellcheck="false"
+          ${state.assistantEnabled ? '' : 'disabled'} />
+      </label>
+      ${state.assistantDisclosureAcknowledged ? '' : `
+        <div class="assistant-disclosure" role="note">
+          <p>${escapeHtml(t().assistantDisclosure)}</p>
+          <button id="assistant-disclosure" class="link-btn" type="button">${escapeHtml(t().assistantDisclosureAcknowledge)}</button>
+        </div>`}
+    </section>
 
     <details class="section settings-section" id="settings">
       <summary>
@@ -160,7 +196,7 @@ function render() {
                 `<option value="${escapeHtml(d.id)}" ${state.audioDevice === d.id ? 'selected' : ''}>${escapeHtml(d.label)}</option>`
               ).join('')}
             </select>
-            <button id="audio-device-scan" class="btn-ghost" title="${escapeHtml(t().audioDeviceScan)}">↺</button>
+            <button id="audio-device-scan" class="btn-ghost" type="button" aria-label="${escapeHtml(t().audioDeviceScan)}" title="${escapeHtml(t().audioDeviceScan)}">↺</button>
           </div>
         </label>
         <label class="full">
@@ -220,15 +256,15 @@ function renderModelOptions(): string {
 function renderEntry(e: HistoryEntry): string {
   return `
     <div class="entry" data-id="${e.id}">
-      <div class="entry-text" title="${escapeHtml(e.text)}">${escapeHtml(e.text)}</div>
+      <div class="entry-text" dir="auto" lang="${escapeHtml(e.lang)}">${escapeHtml(e.text)}</div>
       <div class="entry-meta">
         <span class="badge">${langFlag(e.lang)} ${escapeHtml(e.lang)}</span>
         <span class="ts">${fmtTime(e.ts)}</span>
-        <button class="icon-btn" data-act="copy" data-id="${e.id}" title="${escapeHtml(t().copy)}">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z"/></svg>
+        <button class="icon-btn" type="button" data-act="copy" data-id="${e.id}" aria-label="${escapeHtml(t().copy)}" title="${escapeHtml(t().copy)}">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M16 1H4a2 2 0 0 0-2 2v14h2V3h12V1zm3 4H8a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h11a2 2 0 0 0 2-2V7a2 2 0 0 0-2-2zm0 16H8V7h11v14z"/></svg>
         </button>
-        <button class="icon-btn danger" data-act="remove" data-id="${e.id}" title="${escapeHtml(t().remove)}">
-          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
+        <button class="icon-btn danger" type="button" data-act="remove" data-id="${e.id}" aria-label="${escapeHtml(t().remove)}" title="${escapeHtml(t().remove)}">
+          <svg width="14" height="14" viewBox="0 0 24 24" fill="currentColor" aria-hidden="true"><path d="M6 19a2 2 0 0 0 2 2h8a2 2 0 0 0 2-2V7H6v12zM19 4h-3.5l-1-1h-5l-1 1H5v2h14V4z"/></svg>
         </button>
       </div>
     </div>
@@ -313,6 +349,20 @@ function attachHandlers() {
   });
   document.getElementById('audio-device-scan')?.addEventListener('click', () => {
     vscode.postMessage({ type: 'audio-device-scan' });
+  });
+  document.getElementById('assistant-enabled')?.addEventListener('click', () => {
+    state.assistantEnabled = !state.assistantEnabled;
+    vscode.postMessage({ type: 'assistant-enabled-change', enabled: state.assistantEnabled });
+    render();
+  });
+  document.getElementById('assistant-wake-phrase')?.addEventListener('change', (e) => {
+    state.assistantWakePhrase = (e.target as HTMLInputElement).value.trim();
+    vscode.postMessage({ type: 'assistant-wake-phrase-change', wakePhrase: state.assistantWakePhrase });
+  });
+  document.getElementById('assistant-disclosure')?.addEventListener('click', () => {
+    state.assistantDisclosureAcknowledged = true;
+    vscode.postMessage({ type: 'assistant-disclosure-acknowledged' });
+    render();
   });
 }
 

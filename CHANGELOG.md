@@ -6,6 +6,25 @@ Each version corresponds to a git tag of the form `vX.Y.Z`.
 
 ---
 
+## [Unreleased]
+
+### Added
+- Bundled Picovoice PvRecorder targets for desktop VS Code on supported Linux, macOS, and Windows architectures; recording no longer requires `ffmpeg` or another external audio executable. Real microphone capture still requires validation on each target OS/architecture.
+- Explicit **Toggle Assistant Listening** command and sidebar state with first-use modal consent stored in VS Code global state. Assistant listening never auto-starts and lasts only while VS Code is running.
+- Local silence/speech segmentation, Hebrew/English wake phrases, a custom wake-phrase setting, and allowlisted actions for VS Code Chat, terminal, Voice Input settings, and stopping the session.
+- `THIRD_PARTY_NOTICES.md` with Apache-2.0 attribution for Picovoice PvRecorder.
+
+### Changed
+- Microphone choices now use stable versioned identities; uniquely matching legacy device-name settings are migrated, while missing or ambiguous devices require explicit reselection.
+- Assistant transcription is bounded to one request in flight and one queued utterance. Overflow, capture, and transcription errors stop listening and remain visible in the status bar.
+- Push-to-talk and assistant listening are mutually exclusive. Native handles, request abort controllers, and renewal/safety timers are cancelled on stop and deactivation.
+- Non-command assistant speech is append-only insertion/paste and never auto-submits. Exact Hebrew/Unicode paste is supported for Claude, ChatGPT, and Copilot inputs, but their sandboxed RTL DOM cannot be restyled by this extension.
+- Device refresh uses explicit scans and a short cache instead of a Linux `/dev/snd/` watcher. Audio-executable dependency prompts and checks were removed; diagnostics now cover native enumeration and optional paste helpers.
+
+### Privacy
+- Soniox transcription and uploaded-file deletion are attempted after each request. Cleanup failures do not hide a successful transcript or replace the original transcription error.
+- Audio and transcript content are excluded from extension logs.
+
 ## [1.0.7] — 2026-05-18
 
 ### Added
