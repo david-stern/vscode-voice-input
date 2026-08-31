@@ -107,6 +107,33 @@ const ACTION_PHRASES: Readonly<Record<AssistantAction, readonly string[]>> = {
 };
 
 /**
+ * A custom mapping may only be confirmed by one of these local-only phrases.
+ * They deliberately are not part of AssistantAction/DeepSeek's vocabulary:
+ * the extension must consume them only when a custom action is pending.
+ */
+export const CONFIRM_CUSTOM_ACTION_PHRASES = [
+  'confirm action',
+  'yes do it',
+  'אשר פעולה',
+  'אשרי פעולה',
+  'כן בצע',
+  'כן בצעי',
+] as const;
+
+/** Voice mappings must not shadow any built-in or confirmation phrase. */
+export const RESERVED_ASSISTANT_PHRASES = [
+  ...Object.values(ACTION_PHRASES).flat(),
+  ...CONFIRM_CUSTOM_ACTION_PHRASES,
+] as const;
+
+export function isConfirmCustomActionPhrase(text: string): boolean {
+  const normalized = normalizeCommand(text);
+  return CONFIRM_CUSTOM_ACTION_PHRASES.some(
+    (phrase) => normalizeCommand(phrase) === normalized,
+  );
+}
+
+/**
  * Parses a transcript only when it starts with an explicit wake phrase.
  * Commands are exact, allowlisted phrases. Everything else is paste-only and
  * carries `submit: false`, so consumers cannot interpret it as an arbitrary

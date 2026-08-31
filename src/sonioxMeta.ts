@@ -2,8 +2,6 @@
 // Models: GET /v1/models (auth required) — real-time data.
 // Languages: hardcoded baseline (stable), best-effort doc scrape for refresh.
 
-import { log } from './log';
-
 const SONIOX_API = 'https://api.soniox.com/v1';
 const LANG_DOCS_URL = 'https://soniox.com/docs/stt/concepts/supported-languages';
 
@@ -88,29 +86,29 @@ export const HARDCODED_MODELS: ModelInfo[] = [
 ];
 
 export async function fetchModels(apiKey: string): Promise<ModelInfo[]> {
-  const res = await fetch(`${SONIOX_API}/models`, {
-    headers: { Authorization: `Bearer ${apiKey}` },
-  });
-  if (!res.ok) {
-    throw new Error(`Soniox /v1/models HTTP ${res.status}: ${await res.text()}`);
+  try {
+    const response = await fetch(`${SONIOX_API}/models`, {
+      headers: { Authorization: `Bearer ${apiKey}` },
+    });
+    if (!response.ok) throw new Error('http');
+    const body = (await response.json()) as Record<string, unknown>;
+    // Defensive: API may return { models: [...] } or { data: [...] } or top-level array.
+    const models =
+      (body.models as ModelInfo[] | undefined) ??
+      (body.data as ModelInfo[] | undefined) ??
+      (Array.isArray(body) ? (body as unknown as ModelInfo[]) : null);
+    if (!models || models.length === 0) throw new Error('shape');
+    return models.map((model) => ({
+      id: String((model as { id?: string }).id ?? (model as { model?: string }).model ?? ''),
+      type: (model as { type?: string }).type,
+      description:
+        (model as { description?: string }).description ??
+        (model as { display_name?: string }).display_name,
+    })).filter((model) => model.id);
+  } catch {
+    // Provider response bodies, credentials and raw network errors stay at this boundary.
+    throw new Error('Soniox model metadata is unavailable');
   }
-  const body = (await res.json()) as Record<string, unknown>;
-  // Defensive: API may return { models: [...] } or { data: [...] } or top-level array.
-  const arr =
-    (body.models as ModelInfo[] | undefined) ??
-    (body.data as ModelInfo[] | undefined) ??
-    (Array.isArray(body) ? (body as unknown as ModelInfo[]) : null);
-  if (!arr || arr.length === 0) {
-    log('soniox /v1/models: unexpected shape', body);
-    throw new Error('Soniox /v1/models returned unexpected shape');
-  }
-  return arr.map((m) => ({
-    id: String((m as { id?: string }).id ?? (m as { model?: string }).model ?? ''),
-    type: (m as { type?: string }).type,
-    description:
-      (m as { description?: string }).description ??
-      (m as { display_name?: string }).display_name,
-  })).filter((m) => m.id);
 }
 
 /**
@@ -125,10 +123,8 @@ export async function fetchLanguages(): Promise<LanguageInfo[]> {
     const html = await res.text();
     const langs = parseLangsFromHtml(html);
     if (langs.length < 30) throw new Error(`scrape gave only ${langs.length} entries`);
-    log('languages scraped:', langs.length);
     return [{ code: 'auto', name: 'Auto-detect' }, ...langs];
-  } catch (e) {
-    log('language scrape failed, using hardcoded:', (e as Error).message);
+  } catch {
     return HARDCODED_LANGUAGES;
   }
 }

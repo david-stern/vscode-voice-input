@@ -1,9 +1,16 @@
 import * as vscode from 'vscode';
-import { startPcmCapture, PcmCaptureHandle, PcmSource } from './capture';
+import {
+  startPcmCapture,
+  PcmCaptureHandle,
+  PcmSource,
+  ZeroSampleCaptureError,
+} from './capture';
 import {
   audioDevicesFromNames,
   AudioDevice,
+  fallbackIndexForLoopbackDefault,
   isLoopbackMonitorName,
+  NoUsableAudioInputError,
   resolveAudioDeviceIndex,
 } from './devices';
 import { pcm16FramesToWav } from './wav';
@@ -86,28 +93,50 @@ export async function startPcmStream(options: PcmStreamOptions): Promise<PcmStre
   const maxDurationMs = Math.min(requestedDuration, MAX_CAPTURE_MS);
 
   const PvRecorder = loadPvRecorder();
+  const availableDevices = PvRecorder.getAvailableDevices();
   const deviceId = options.deviceId?.trim() ?? '';
   const deviceIndex = deviceId
-    ? resolveAudioDeviceIndex(deviceId, PvRecorder.getAvailableDevices())
+    ? resolveAudioDeviceIndex(deviceId, availableDevices)
     : -1;
 
-  const recorder = new PvRecorder(FRAME_LENGTH, deviceIndex, BUFFERED_FRAMES);
+  let recorder: PvRecorderInstance | undefined = new PvRecorder(
+    FRAME_LENGTH,
+    deviceIndex,
+    BUFFERED_FRAMES,
+  );
   let selectedDevice: string;
   let capture: PcmCaptureHandle;
   try {
     selectedDevice = recorder.getSelectedDevice();
+    if (!deviceId) {
+      const fallbackIndex = fallbackIndexForLoopbackDefault(
+        availableDevices,
+        selectedDevice,
+        process.platform,
+      );
+      if (fallbackIndex !== undefined) {
+        recorder.release();
+        recorder = undefined;
+        recorder = new PvRecorder(FRAME_LENGTH, fallbackIndex, BUFFERED_FRAMES);
+        selectedDevice = recorder.getSelectedDevice();
+        if (process.platform === 'linux' && isLoopbackMonitorName(selectedDevice)) {
+          throw new NoUsableAudioInputError();
+        }
+      }
+    }
     capture = startPcmCapture(recorder, {
       maxSamples: Math.max(1, Math.floor(recorder.sampleRate * maxDurationMs / 1000)),
       maxDurationMs,
       onFrame: options.onFrame,
     });
   } catch (error) {
-    try { recorder.release(); } catch { /* preserve the start error */ }
+    try { recorder?.release(); } catch { /* preserve the start error */ }
     throw error;
   }
 
   return {
     sampleRate: capture.sampleRate,
+    get samplesCaptured() { return capture.samplesCaptured; },
     selectedDevice,
     outcome: capture.outcome,
     stop: () => capture.stop(),
@@ -130,6 +159,9 @@ export async function startRecorder(): Promise<RecorderHandle> {
     if (!stopPromise) {
       stopPromise = stream.stop().then(() => {
         if (cancelled) return null;
+        if (stream.samplesCaptured === 0) {
+          throw new ZeroSampleCaptureError(stream.selectedDevice);
+        }
         return {
           wav: pcm16FramesToWav(frames, stream.sampleRate),
           mime: 'audio/wav' as const,

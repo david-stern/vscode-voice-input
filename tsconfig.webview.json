@@ -1,0 +1,19 @@
+{
+  "compilerOptions": {
+    "module": "ESNext",
+    "moduleResolution": "Bundler",
+    "target": "ES2022",
+    "lib": ["ES2022", "DOM"],
+    "strict": true,
+    "noEmit": true,
+    "skipLibCheck": true,
+    "types": []
+  },
+  "include": [
+    "src/webview/mic.client.ts",
+    "src/webview/settings.client.ts",
+    "src/webview/protocol.ts",
+    "src/webview/i18n.ts",
+    "src/webview/speech.ts"
+  ]
+}

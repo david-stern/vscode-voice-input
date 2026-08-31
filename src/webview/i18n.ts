@@ -4,6 +4,8 @@ export interface Strings {
   appTitle: string;
   recording: string;
   idle: string;
+  micStartAction: string;
+  micStopAction: string;
   encoding: string;
   transcribing: string;
   holdHint: string;
@@ -12,6 +14,7 @@ export interface Strings {
   noHistory: string;
   copy: string;
   copied: string;
+  copySuccess: string;
   remove: string;
   clearAll: string;
   confirmClear: string;
@@ -55,12 +58,14 @@ export interface Strings {
   personaTravelGuide: string;
   personaMathematician: string;
   personaPhilosopher: string;
-  deepSeek: string;
-  deepSeekReady: string;
-  deepSeekMissing: string;
-  deepSeekChecking: string;
-  deepSeekError: string;
-  deepSeekSetup: string;
+  providerHeading: string;
+  providerReady: string;
+  providerMissing: string;
+  providerConsentRequired: string;
+  providerChecking: string;
+  providerError: string;
+  providerManage: string;
+  providerOff: string;
   speechResponse: string;
   speechEnabled: string;
   speechVoice: string;
@@ -73,11 +78,23 @@ export interface Strings {
   assistantTarget: string;
   assistantTargetUnknown: string;
   assistantPlanConfidence: string;
-  deepSeekDisclosure: string;
+  providerDisclosure: string;
   pendingSend: string;
   pendingSendExplain: string;
   pendingSendConfirm: string;
   pendingSendCancel: string;
+  customMappings: string;
+  customMappingsCount: string;
+  customMappingsAgentExposed: string;
+  customMappingsStatusReady: string;
+  customMappingsStatusUntrusted: string;
+  customMappingsStatusError: string;
+  customMappingsManage: string;
+  pendingAction: string;
+  pendingActionExplain: string;
+  pendingActionTarget: string;
+  pendingActionConfirm: string;
+  pendingActionCancel: string;
 }
 
 export const STRINGS: Record<UiLang, Strings> = {
@@ -85,6 +102,8 @@ export const STRINGS: Record<UiLang, Strings> = {
     appTitle: 'קלט קולי',
     recording: 'מקליט...',
     idle: 'מוכן',
+    micStartAction: 'התחל הקלטה',
+    micStopAction: 'עצור הקלטה',
     encoding: 'מקודד...',
     transcribing: 'מתמלל...',
     holdHint: 'לחץ והחזק כדי להקליט',
@@ -94,6 +113,7 @@ export const STRINGS: Record<UiLang, Strings> = {
     noHistory: 'אין הקלטות עדיין',
     copy: 'העתק',
     copied: 'הועתק',
+    copySuccess: 'רשומת ההיסטוריה הועתקה.',
     remove: 'מחק',
     clearAll: 'מחק הכל',
     confirmClear: 'למחוק את כל ההיסטוריה?',
@@ -136,12 +156,14 @@ export const STRINGS: Record<UiLang, Strings> = {
     personaTravelGuide: 'מדריך טיולים',
     personaMathematician: 'מתמטיקאי',
     personaPhilosopher: 'פילוסוף',
-    deepSeek: 'עיבוד חכם באמצעות DeepSeek',
-    deepSeekReady: 'DeepSeek מוגדר ומוכן',
-    deepSeekMissing: 'DeepSeek עדיין לא מוגדר',
-    deepSeekChecking: 'בודק את הגדרת DeepSeek…',
-    deepSeekError: 'לא ניתן להשתמש ב‑DeepSeek כרגע',
-    deepSeekSetup: 'הגדר DeepSeek',
+    providerHeading: 'ספק הסקה נבחר',
+    providerReady: 'הספק שנבחר מוגדר ומוכן',
+    providerMissing: 'הספק שנבחר עדיין אינו מוגדר',
+    providerConsentRequired: 'יש לאשר את גילוי הספק שנבחר',
+    providerChecking: 'בודק את הספק שנבחר…',
+    providerError: 'לא ניתן להשתמש כעת בספק שנבחר',
+    providerManage: 'נהל ספק ומודל',
+    providerOff: 'כבוי',
     speechResponse: 'תשובה קולית',
     speechEnabled: 'העוזר יענה בקול',
     speechVoice: 'קול',
@@ -154,16 +176,30 @@ export const STRINGS: Record<UiLang, Strings> = {
     assistantTarget: 'יעד הפעולה',
     assistantTargetUnknown: 'עדיין לא זוהה יעד פעיל',
     assistantPlanConfidence: 'ביטחון בתוכנית',
-    deepSeekDisclosure: 'DeepSeek אופציונלי. לאחר הסכמה נפרדת הוא מקבל רק את הבקשה שלאחר ביטוי ההפעלה, מצב העוזר, שפת הממשק ומידע יעד מינימלי. לא נשלחים צילום מסך, קבצים, בחירה, לוח, היסטוריית מסוף או היסטוריית צ׳אט.',
+    providerDisclosure: 'ספק הסקה הוא אופציונלי. כאשר ספק מרוחק פעיל ולאחר הסכמה נפרדת, הוא מקבל רק את הבקשה שלאחר ביטוי ההפעלה, הוראות סוכן מוגבלות, שפת הממשק ומידע יעד מינימלי. לא נשלחים צילום מסך, קבצים, בחירה, לוח, היסטוריית מסוף או היסטוריית צ׳אט.',
     pendingSend: 'ממתין לאישור שליחה',
     pendingSendExplain: 'העוזר הכין את הטקסט, אך לא ישלח אותו לפני אישורך.',
     pendingSendConfirm: 'אשר ושלח',
     pendingSendCancel: 'בטל',
+    customMappings: 'פקודות קוליות מותאמות',
+    customMappingsCount: 'פקודות פעילות',
+    customMappingsAgentExposed: 'זמינות לסוכן',
+    customMappingsStatusReady: 'מוכנות להפעלה באישור נפרד',
+    customMappingsStatusUntrusted: 'הפעלה חסומה עד שתסמוך על סביבת העבודה',
+    customMappingsStatusError: 'לא ניתן לטעון את הפקודות המותאמות',
+    customMappingsManage: 'ניהול פקודות',
+    pendingAction: 'ממתין לאישור פעולה',
+    pendingActionExplain: 'הפקודה לא תופעל לפני אישורך. בדוק את השם ואת יעד הפעולה המדויק.',
+    pendingActionTarget: 'יעד פעולה מדויק',
+    pendingActionConfirm: 'אשר והפעל',
+    pendingActionCancel: 'בטל',
   },
   en: {
     appTitle: 'Voice Input',
     recording: 'Recording...',
     idle: 'Ready',
+    micStartAction: 'Start recording',
+    micStopAction: 'Stop recording',
     encoding: 'Encoding...',
     transcribing: 'Transcribing...',
     holdHint: 'Hold to record',
@@ -173,6 +209,7 @@ export const STRINGS: Record<UiLang, Strings> = {
     noHistory: 'No recordings yet',
     copy: 'Copy',
     copied: 'Copied',
+    copySuccess: 'History entry copied.',
     remove: 'Delete',
     clearAll: 'Clear all',
     confirmClear: 'Clear all history?',
@@ -215,12 +252,14 @@ export const STRINGS: Record<UiLang, Strings> = {
     personaTravelGuide: 'Travel guide',
     personaMathematician: 'Mathematician',
     personaPhilosopher: 'Philosopher',
-    deepSeek: 'Smart processing with DeepSeek',
-    deepSeekReady: 'DeepSeek is configured and ready',
-    deepSeekMissing: 'DeepSeek is not configured yet',
-    deepSeekChecking: 'Checking the DeepSeek setup…',
-    deepSeekError: 'DeepSeek is currently unavailable',
-    deepSeekSetup: 'Set up DeepSeek',
+    providerHeading: 'Selected reasoning provider',
+    providerReady: 'The selected provider is configured and ready',
+    providerMissing: 'The selected provider is not configured yet',
+    providerConsentRequired: 'Acknowledge the selected provider disclosure',
+    providerChecking: 'Checking the selected provider…',
+    providerError: 'The selected provider is currently unavailable',
+    providerManage: 'Manage provider and model',
+    providerOff: 'Off',
     speechResponse: 'Spoken response',
     speechEnabled: 'Let the assistant answer aloud',
     speechVoice: 'Voice',
@@ -233,10 +272,27 @@ export const STRINGS: Record<UiLang, Strings> = {
     assistantTarget: 'Action target',
     assistantTargetUnknown: 'No active target has been detected yet',
     assistantPlanConfidence: 'Plan confidence',
-    deepSeekDisclosure: 'DeepSeek is optional. After separate consent it receives only the post-wake request, assistant mode, UI language, and minimal target metadata. Screenshots, files, selections, clipboard, terminal history, and chat history are never sent.',
+    providerDisclosure: 'Reasoning is optional. When a remote provider is enabled and separately consented, it receives only the post-wake request, bounded agent instructions, UI language, and minimal target metadata. Screenshots, files, selections, clipboard, terminal history, and chat history are never sent.',
     pendingSend: 'Waiting for send approval',
     pendingSendExplain: 'The assistant prepared this text but will not send it without your approval.',
     pendingSendConfirm: 'Approve and send',
     pendingSendCancel: 'Cancel',
+    customMappings: 'Custom voice commands',
+    customMappingsCount: 'Active mappings',
+    customMappingsAgentExposed: 'Available to Agent',
+    customMappingsStatusReady: 'Ready to run with separate approval',
+    customMappingsStatusUntrusted: 'Running is blocked until you trust this workspace',
+    customMappingsStatusError: 'Custom mappings could not be loaded',
+    customMappingsManage: 'Manage mappings',
+    pendingAction: 'Waiting for action approval',
+    pendingActionExplain: 'The command will not run until you approve it. Check the name and exact action target.',
+    pendingActionTarget: 'Exact action target',
+    pendingActionConfirm: 'Approve and run',
+    pendingActionCancel: 'Cancel',
   },
 };
+
+export {
+  SETTINGS_STRINGS,
+  type SettingsStrings,
+} from './settings/i18n';

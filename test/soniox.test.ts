@@ -1,7 +1,45 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { transcribe } from '../src/stt/soniox';
+import { SonioxTranscriptionError, transcribe } from '../src/stt/soniox';
+
+test('provider bodies, error_message, paths, keys, and raw failures never cross the STT boundary', async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => { globalThis.fetch = originalFetch; });
+  const malicious = 'private-key /home/david/private provider-response-body';
+  const input = {
+    audio: new Uint8Array([1, 2, 3, 4]),
+    mime: 'audio/wav',
+    apiKey: malicious,
+    model: 'test-model',
+    pollIntervalMs: 0,
+  };
+
+  globalThis.fetch = async () => new Response(malicious, { status: 401 });
+  await assertSanitizedFailure(input, 'upload-rejected', malicious);
+
+  globalThis.fetch = async () => { throw new Error(malicious); };
+  await assertSanitizedFailure(input, 'unavailable', malicious);
+
+  globalThis.fetch = async (request, init) => {
+    const url = String(request);
+    if (init?.method === 'POST' && url.endsWith('/files')) {
+      return Response.json({ id: 'file-safe' }, { status: 201 });
+    }
+    if (init?.method === 'POST' && url.endsWith('/transcriptions')) {
+      return Response.json({ id: 'transcription-safe' }, { status: 201 });
+    }
+    if (init?.method === 'DELETE') return new Response(null, { status: 204 });
+    if (url.endsWith('/transcriptions/transcription-safe')) {
+      return Response.json({ status: 'error', error_message: malicious });
+    }
+    throw new Error(malicious);
+  };
+  await assertSanitizedFailure(input, 'provider-rejected', malicious);
+
+  globalThis.fetch = async () => Response.json({ id: `../${malicious}` }, { status: 201 });
+  await assertSanitizedFailure(input, 'invalid-response', malicious);
+});
 
 test('an aborted transcription still deletes known remote resources independently', async () => {
   const originalFetch = globalThis.fetch;
@@ -54,3 +92,28 @@ test('an aborted transcription still deletes known remote resources independentl
     globalThis.fetch = originalFetch;
   }
 });
+
+async function assertSanitizedFailure(
+  input: Parameters<typeof transcribe>[0],
+  category: SonioxTranscriptionError['category'],
+  malicious: string,
+): Promise<void> {
+  await assert.rejects(
+    transcribe(input),
+    (error: unknown) => {
+      assert.ok(error instanceof SonioxTranscriptionError);
+      assert.equal(error.category, category);
+      assert.equal(error.message, 'Soniox transcription failed safely.');
+      assert.doesNotMatch(JSON.stringify({
+        name: error.name,
+        message: error.message,
+        category: error.category,
+      }), new RegExp(escapeRegExp(malicious), 'u'));
+      return true;
+    },
+  );
+}
+
+function escapeRegExp(value: string): string {
+  return value.replace(/[.*+?^${}()|[\]\\]/gu, '\\$&');
+}

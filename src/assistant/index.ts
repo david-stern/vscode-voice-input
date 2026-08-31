@@ -9,10 +9,16 @@ export {
 } from './vad';
 
 export {
+  CONFIRM_CUSTOM_ACTION_PHRASES,
   DEFAULT_WAKE_PHRASES,
+  RESERVED_ASSISTANT_PHRASES,
+  isConfirmCustomActionPhrase,
   parseAssistantText,
   type AssistantAction,
   type AssistantIntent,
   type AssistantParseResult,
   type AssistantParserOptions,
 } from './intents';
+
+export * from './mappings';
+export * from './mappingExecutor';

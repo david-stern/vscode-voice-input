@@ -61,6 +61,7 @@ test('stop is idempotent and releases native resources exactly once', async () =
 
   source.emit(1, 2, 3);
   await nextTurn();
+  assert.equal(capture.samplesCaptured, 3);
   const firstStop = capture.stop();
   const secondStop = capture.stop();
   assert.equal(firstStop, secondStop);
@@ -141,6 +142,7 @@ test('duration bound stops an otherwise idle source', async () => {
 
   await new Promise((resolve) => setTimeout(resolve, 20));
   await capture.stop();
+  assert.equal(capture.samplesCaptured, 0);
   assert.equal(source.stops, 1);
   assert.equal(source.releases, 1);
 });

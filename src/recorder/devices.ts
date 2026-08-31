@@ -43,6 +43,25 @@ export interface ParsedAudioDeviceId {
   occurrence: number;
 }
 
+export const NO_USABLE_AUDIO_INPUT_CODE = 'VOICE_INPUT_NO_USABLE_AUDIO_INPUT';
+
+/** The native default is a loopback source and no real input can replace it. */
+export class NoUsableAudioInputError extends Error {
+  readonly code = NO_USABLE_AUDIO_INPUT_CODE;
+
+  constructor() {
+    super('No usable microphone input is available.');
+    this.name = 'NoUsableAudioInputError';
+  }
+}
+
+export function isNoUsableAudioInputError(error: unknown): error is NoUsableAudioInputError {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && error.code === NO_USABLE_AUDIO_INPUT_CODE;
+}
+
 /** Parse only canonical Voice Input device IDs from the current ID version. */
 export function parseAudioDeviceId(id: string): ParsedAudioDeviceId | null {
   if (!id.startsWith(DEVICE_ID_PREFIX)) return null;
@@ -58,6 +77,21 @@ export function parseAudioDeviceId(id: string): ParsedAudioDeviceId | null {
   const occurrence = Number(occurrenceText);
   if (!Number.isSafeInteger(occurrence)) return null;
   return { name, occurrence };
+}
+
+/**
+ * Return an explicit Linux input when the native system default is a monitor.
+ * Other platforms, and safe Linux defaults, keep PvRecorder's default index.
+ */
+export function fallbackIndexForLoopbackDefault(
+  names: readonly string[],
+  selectedDefault: string,
+  platform: NodeJS.Platform,
+): number | undefined {
+  if (platform !== 'linux' || !isLoopbackMonitorName(selectedDefault)) return undefined;
+  const fallback = names.findIndex((name) => !isLoopbackMonitorName(name));
+  if (fallback < 0) throw new NoUsableAudioInputError();
+  return fallback;
 }
 
 /** Resolve a saved ID against the current order without falling back silently. */

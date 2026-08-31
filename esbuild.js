@@ -3,11 +3,14 @@ const fs = require('fs');
 const path = require('path');
 
 const watch = process.argv.includes('--watch');
+const outDir = path.join(__dirname, 'out');
 
 const ctxs = [];
 
 async function build() {
-  const licenseDir = path.join(__dirname, 'out', 'licenses');
+  fs.rmSync(outDir, { recursive: true, force: true });
+
+  const licenseDir = path.join(outDir, 'licenses');
   fs.mkdirSync(licenseDir, { recursive: true });
   fs.copyFileSync(
     path.join(__dirname, 'src', 'recorder', 'PICOVOICE-LICENSE.txt'),
@@ -18,8 +21,7 @@ async function build() {
   // dependency avoids shipping its TypeScript sources, tests, maps, and build
   // configuration while preserving every supported native binary.
   const recorderSource = path.join(__dirname, 'node_modules', '@picovoice', 'pvrecorder-node');
-  const recorderTarget = path.join(__dirname, 'out', 'vendor', 'pvrecorder-node');
-  fs.rmSync(recorderTarget, { recursive: true, force: true });
+  const recorderTarget = path.join(outDir, 'vendor', 'pvrecorder-node');
   fs.mkdirSync(recorderTarget, { recursive: true });
   fs.copyFileSync(path.join(recorderSource, 'package.json'), path.join(recorderTarget, 'package.json'));
   fs.cpSync(path.join(recorderSource, 'lib'), path.join(recorderTarget, 'lib'), { recursive: true });
@@ -43,9 +45,12 @@ async function build() {
   });
 
   const web = await esbuild.context({
-    entryPoints: ['src/webview/mic.client.ts'],
+    entryPoints: {
+      'mic.client': 'src/webview/mic.client.ts',
+      'settings.client': 'src/webview/settings.client.ts',
+    },
     bundle: true,
-    outfile: 'out/webview/mic.client.js',
+    outdir: 'out/webview',
     platform: 'browser',
     target: 'es2022',
     format: 'iife',

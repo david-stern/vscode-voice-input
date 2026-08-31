@@ -13,5 +13,10 @@
     "types": ["node", "vscode"]
   },
   "include": ["src/**/*"],
-  "exclude": ["node_modules", "out", "src/webview/mic.client.ts"]
+  "exclude": [
+    "node_modules",
+    "out",
+    "src/webview/mic.client.ts",
+    "src/webview/settings.client.ts"
+  ]
 }

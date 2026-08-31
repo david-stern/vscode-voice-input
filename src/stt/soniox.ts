@@ -1,4 +1,23 @@
 const SONIOX_API = 'https://api.soniox.com/v1';
+const PROVIDER_ID_PATTERN = /^[A-Za-z0-9_-]{1,256}$/u;
+
+export type SonioxTranscriptionFailureCategory =
+  | 'upload-rejected'
+  | 'request-rejected'
+  | 'status-rejected'
+  | 'provider-rejected'
+  | 'transcript-rejected'
+  | 'invalid-response'
+  | 'timed-out'
+  | 'unavailable';
+
+/** Fixed, content-free error crossing the Soniox provider boundary. */
+export class SonioxTranscriptionError extends Error {
+  constructor(public readonly category: SonioxTranscriptionFailureCategory) {
+    super('Soniox transcription failed safely.');
+    this.name = 'SonioxTranscriptionError';
+  }
+}
 
 export interface TranscribeOpts {
   audio: Uint8Array;
@@ -41,9 +60,9 @@ export async function transcribe(opts: TranscribeOpts): Promise<string> {
       signal,
     });
     if (!upRes.ok) {
-      throw new Error(`Soniox upload HTTP ${upRes.status}`);
+      throw new SonioxTranscriptionError('upload-rejected');
     }
-    ({ id: fileId } = (await upRes.json()) as { id: string });
+    fileId = await readProviderId(upRes);
 
     const body: Record<string, unknown> = { model, file_id: fileId };
     if (languageHint && languageHint !== 'auto') {
@@ -60,13 +79,13 @@ export async function transcribe(opts: TranscribeOpts): Promise<string> {
       signal,
     });
     if (!txnRes.ok) {
-      throw new Error(`Soniox transcription HTTP ${txnRes.status}`);
+      throw new SonioxTranscriptionError('request-rejected');
     }
-    ({ id: txnId } = (await txnRes.json()) as { id: string });
+    txnId = await readProviderId(txnRes);
 
     const deadline = Date.now() + timeoutMs;
     while (true) {
-      if (Date.now() > deadline) throw new Error('Soniox transcription timed out');
+      if (Date.now() > deadline) throw new SonioxTranscriptionError('timed-out');
       await abortableDelay(pollIntervalMs, signal);
 
       const stRes = await fetch(`${SONIOX_API}/transcriptions/${txnId}`, {
@@ -74,12 +93,16 @@ export async function transcribe(opts: TranscribeOpts): Promise<string> {
         signal,
       });
       if (!stRes.ok) {
-        throw new Error(`Soniox poll HTTP ${stRes.status}`);
+        throw new SonioxTranscriptionError('status-rejected');
       }
-      const status = (await stRes.json()) as { status: string; error_message?: string };
+      const status = await readProviderObject(stRes);
+      if (typeof status.status !== 'string') {
+        throw new SonioxTranscriptionError('invalid-response');
+      }
       if (status.status === 'completed') break;
       if (status.status === 'error') {
-        throw new Error(`Soniox STT error: ${status.error_message ?? 'unknown'}`);
+        // `error_message` and all other provider body fields are intentionally ignored.
+        throw new SonioxTranscriptionError('provider-rejected');
       }
     }
 
@@ -88,16 +111,51 @@ export async function transcribe(opts: TranscribeOpts): Promise<string> {
       signal,
     });
     if (!trRes.ok) {
-      throw new Error(`Soniox transcript HTTP ${trRes.status}`);
+      throw new SonioxTranscriptionError('transcript-rejected');
     }
-    const { text } = (await trRes.json()) as { text: string };
+    const transcript = await readProviderObject(trRes);
+    if (typeof transcript.text !== 'string') {
+      throw new SonioxTranscriptionError('invalid-response');
+    }
+    const { text } = transcript;
     return text.trim();
+  } catch (error) {
+    if (signal?.aborted || isAbortError(error)) {
+      throw new DOMException('Aborted', 'AbortError');
+    }
+    if (error instanceof SonioxTranscriptionError) throw error;
+    throw new SonioxTranscriptionError('unavailable');
   } finally {
     // Remote cleanup is intentionally best effort. A deletion failure must not
     // replace a successful transcript or mask the original transcription error.
     if (txnId) await bestEffortDelete(`transcriptions/${txnId}`, apiKey);
     if (fileId) await bestEffortDelete(`files/${fileId}`, apiKey);
   }
+}
+
+async function readProviderId(response: Response): Promise<string> {
+  const body = await readProviderObject(response);
+  if (typeof body.id !== 'string' || !PROVIDER_ID_PATTERN.test(body.id)) {
+    throw new SonioxTranscriptionError('invalid-response');
+  }
+  return body.id;
+}
+
+async function readProviderObject(response: Response): Promise<Record<string, unknown>> {
+  try {
+    const value: unknown = await response.json();
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+      throw new SonioxTranscriptionError('invalid-response');
+    }
+    return value as Record<string, unknown>;
+  } catch (error) {
+    if (error instanceof SonioxTranscriptionError) throw error;
+    throw new SonioxTranscriptionError('invalid-response');
+  }
+}
+
+function isAbortError(error: unknown): boolean {
+  return error instanceof DOMException && error.name === 'AbortError';
 }
 
 async function bestEffortDelete(path: string, apiKey: string): Promise<void> {

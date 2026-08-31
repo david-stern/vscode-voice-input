@@ -8,6 +8,8 @@ export interface PcmSource {
 
 export interface PcmCaptureHandle {
   readonly sampleRate: number;
+  /** Number of PCM16 samples accepted from the source so far. */
+  readonly samplesCaptured: number;
   /** Resolves once when capture begins ending; it never rejects. */
   readonly outcome: Promise<PcmCaptureOutcome>;
   stop(): Promise<void>;
@@ -22,6 +24,25 @@ export interface PcmCaptureOptions {
   maxSamples: number;
   maxDurationMs: number;
   onFrame(frame: Int16Array): void;
+}
+
+export const ZERO_SAMPLE_CAPTURE_CODE = 'VOICE_INPUT_ZERO_SAMPLES';
+
+/** Normal stop completed, but the native input produced no PCM samples. */
+export class ZeroSampleCaptureError extends Error {
+  readonly code = ZERO_SAMPLE_CAPTURE_CODE;
+
+  constructor(readonly selectedDevice: string) {
+    super(`Audio input produced no samples: ${selectedDevice || 'system default'}`);
+    this.name = 'ZeroSampleCaptureError';
+  }
+}
+
+export function isZeroSampleCaptureError(error: unknown): error is ZeroSampleCaptureError {
+  return typeof error === 'object'
+    && error !== null
+    && 'code' in error
+    && error.code === ZERO_SAMPLE_CAPTURE_CODE;
 }
 
 /** Drive a PCM source with single-shot stop/release semantics. */
@@ -126,6 +147,7 @@ export function startPcmCapture(source: PcmSource, options: PcmCaptureOptions): 
 
   return {
     sampleRate: source.sampleRate,
+    get samplesCaptured() { return acceptedSamples; },
     outcome,
     stop,
     cancel() {

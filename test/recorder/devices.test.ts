@@ -2,7 +2,9 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import {
   audioDevicesFromNames,
+  fallbackIndexForLoopbackDefault,
   isLoopbackMonitorName,
+  NoUsableAudioInputError,
   parseAudioDeviceId,
   resolveAudioDeviceIndex,
 } from '../../src/recorder/devices';
@@ -20,6 +22,21 @@ test('recognizes obvious PulseAudio and PipeWire monitor source names', () => {
   assert.equal(isLoopbackMonitorName('Monitor of Built-in Audio'), true);
   assert.equal(isLoopbackMonitorName('MONITOR OF USB Headset'), true);
   assert.equal(isLoopbackMonitorName('Studio Monitor Microphone'), false);
+});
+
+test('Linux system default falls back from a hidden monitor to a real capture input', () => {
+  const names = [
+    'alsa_output.pci-0000_00_1f.3.analog-stereo.monitor',
+    'alsa_input.usb-Sony_WH-1000XM5.mono-fallback',
+  ];
+
+  assert.equal(fallbackIndexForLoopbackDefault(names, names[0], 'linux'), 1);
+  assert.equal(fallbackIndexForLoopbackDefault(names, names[0], 'darwin'), undefined);
+  assert.equal(fallbackIndexForLoopbackDefault(names, names[1], 'linux'), undefined);
+  assert.throws(
+    () => fallbackIndexForLoopbackDefault([names[0]], names[0], 'linux'),
+    NoUsableAudioInputError,
+  );
 });
 
 test('duplicate names use stable occurrence numbers', () => {

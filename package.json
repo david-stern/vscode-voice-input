@@ -1,8 +1,8 @@
 {
   "name": "voice-input",
-  "displayName": "Voice Input (Soniox STT)",
-  "description": "Push-to-talk voice-to-text for any chat or editor input. Powered by Soniox.",
-  "version": "1.2.0",
+  "displayName": "Voice Input Assistant",
+  "description": "Soniox voice-to-text and a permission-gated personal assistant with configurable AI providers.",
+  "version": "2.0.0",
   "publisher": "david-stern",
   "author": {
     "name": "David Stern"
@@ -12,7 +12,13 @@
     "url": "https://github.com/david-stern/vscode-voice-input.git"
   },
   "engines": {
-    "vscode": "^1.90.0"
+    "vscode": "^1.99.0"
+  },
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": "limited",
+      "description": "Voice transcription and mapping management remain available, but custom VS Code command and language-model tool execution is blocked until the workspace is trusted."
+    }
   },
   "extensionKind": [
     "ui"
@@ -47,6 +53,12 @@
           "id": "voiceInput.micView",
           "name": "Microphone",
           "icon": "$(mic)"
+        },
+        {
+          "type": "webview",
+          "id": "voiceInput.settingsView",
+          "name": "Settings",
+          "icon": "$(settings-gear)"
         }
       ]
     },
@@ -59,6 +71,15 @@
       {
         "command": "voiceInput.toggleAssistant",
         "title": "Voice Input: Toggle Assistant Listening"
+      },
+      {
+        "command": "voiceInput.openSettings",
+        "title": "Voice Input: Open Settings",
+        "icon": "$(settings-gear)"
+      },
+      {
+        "command": "voiceInput.manageCustomMappings",
+        "title": "Voice Input: Manage Custom Voice Actions"
       },
       {
         "command": "voiceInput.setApiKey",
@@ -87,6 +108,72 @@
       {
         "command": "voiceInput.selectAudioDevice",
         "title": "Voice Input: Select Audio Device"
+      },
+      {
+        "command": "voiceInput.manageAssistantProvider",
+        "title": "Voice Input: Manage Assistant Provider Credentials"
+      },
+      {
+        "command": "voiceInput.testAssistantProvider",
+        "title": "Voice Input: Test Assistant Provider Connection"
+      }
+    ],
+    "menus": {
+      "view/title": [
+        {
+          "command": "voiceInput.openSettings",
+          "when": "view == voiceInput.micView",
+          "group": "navigation@1"
+        }
+      ]
+    },
+    "languageModelTools": [
+      {
+        "name": "voice-input_listMappings",
+        "displayName": "List Voice Input Mappings",
+        "modelDescription": "Lists one deterministic page of the opaque IDs, user labels, and descriptions of enabled Voice Input mappings that the user explicitly made available to Agent Mode. Follow nextCursor until null to list all mappings. Static command arguments and tool input are never returned.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "voiceMappings",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "cursor": {
+              "type": "integer",
+              "minimum": 0,
+              "maximum": 50,
+              "description": "Zero-based cursor returned as nextCursor by the previous page. Omit for the first page."
+            },
+            "limit": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 20,
+              "default": 10,
+              "description": "Maximum mappings to return in this page."
+            }
+          },
+          "additionalProperties": false
+        }
+      },
+      {
+        "name": "voice-input_runMapping",
+        "displayName": "Run Voice Input Mapping",
+        "modelDescription": "Runs one enabled, Agent-exposed Voice Input mapping by its opaque mapping ID after VS Code asks the user to confirm the exact saved target. The model cannot provide a command ID, tool name, or arguments.",
+        "canBeReferencedInPrompt": true,
+        "toolReferenceName": "runVoiceMapping",
+        "inputSchema": {
+          "type": "object",
+          "properties": {
+            "mappingId": {
+              "type": "string",
+              "pattern": "^vm_[A-Za-z0-9_-]{22,64}$",
+              "description": "Opaque mapping ID returned by voice-input_listMappings."
+            }
+          },
+          "required": [
+            "mappingId"
+          ],
+          "additionalProperties": false
+        }
       }
     ],
     "keybindings": [
@@ -123,6 +210,12 @@
           "default": "",
           "description": "Optional assistant wake phrase. Empty uses the built-in Hebrew and English wake phrases."
         },
+        "voiceInput.assistantResumeOnStartup": {
+          "type": "boolean",
+          "scope": "application",
+          "default": false,
+          "description": "Resume assistant listening after extension startup only when consent, credentials, microphone readiness, and workspace trust are already available. Startup resume never opens setup prompts or connection tests."
+        },
         "voiceInput.assistantPersona": {
           "type": "string",
           "default": "teacher-lecturer",
@@ -134,12 +227,80 @@
             "mathematician",
             "philosopher"
           ],
-          "description": "Validated conversational style for DeepSeek planning and explanations."
+          "description": "Legacy built-in persona selection retained for agent migration. Manage the active agent and provider in the Voice Input Settings view."
+        },
+        "voiceInput.assistantIntelligence": {
+          "type": "string",
+          "default": "deepseek",
+          "enum": [
+            "off",
+            "deepseek"
+          ],
+          "enumDescriptions": [
+            "Disable remote smart planning. Deterministic commands remain available.",
+            "Allow DeepSeek smart planning only when a credential and explicit consent are also present."
+          ],
+          "description": "Legacy off/DeepSeek compatibility setting retained for migration. Use Assistant Provider and Provider Profiles for current provider selection."
         },
         "voiceInput.deepSeekModel": {
           "type": "string",
           "default": "deepseek-v4-flash",
-          "description": "DeepSeek text model used for optional smart intent planning."
+          "description": "Legacy DeepSeek model setting retained for one-time migration."
+        },
+        "voiceInput.assistantProvider": {
+          "type": "string",
+          "scope": "application",
+          "default": "deepseek",
+          "enum": [
+            "off",
+            "deepseek",
+            "anthropic",
+            "openai",
+            "gemini",
+            "openrouter",
+            "ollama",
+            "bedrock",
+            "grok"
+          ],
+          "description": "Optional planning provider. Selecting a provider never sends data or starts a connection test by itself."
+        },
+        "voiceInput.providerProfiles": {
+          "type": "object",
+          "scope": "application",
+          "description": "Non-secret provider endpoints, models, and enabled state. API keys and tokens are stored only in VS Code SecretStorage and must never be entered here.",
+          "additionalProperties": false,
+          "default": {
+            "deepseek": { "endpoint": "https://api.deepseek.com/chat/completions", "model": "deepseek-v4-flash", "enabled": true },
+            "anthropic": { "endpoint": "https://api.anthropic.com/v1/messages", "model": "claude-sonnet-4-6", "enabled": true },
+            "openai": { "endpoint": "https://api.openai.com/v1/responses", "model": "gpt-5.4", "enabled": true },
+            "gemini": { "endpoint": "https://generativelanguage.googleapis.com/v1beta", "model": "gemini-3.7-flash", "enabled": true },
+            "openrouter": { "endpoint": "https://openrouter.ai/api/v1/chat/completions", "model": "~openai/gpt-latest", "enabled": true },
+            "ollama": { "endpoint": "http://127.0.0.1:11434/api/chat", "model": "gpt-oss", "enabled": true },
+            "bedrock": { "endpoint": "https://bedrock-runtime.us-east-1.amazonaws.com", "model": "us.anthropic.claude-sonnet-4-6", "enabled": true },
+            "grok": { "endpoint": "https://api.x.ai/v1/chat/completions", "model": "grok-4.6", "enabled": true }
+          },
+          "patternProperties": {
+            "^(deepseek|anthropic|openai|gemini|openrouter|ollama|bedrock|grok)$": {
+              "type": "object",
+              "additionalProperties": false,
+              "required": ["endpoint", "model", "enabled"],
+              "properties": {
+                "endpoint": {
+                  "type": "string",
+                  "maxLength": 2048,
+                  "description": "HTTPS planning endpoint. Ollama alone may use HTTP on a loopback hostname."
+                },
+                "model": {
+                  "type": "string",
+                  "minLength": 1,
+                  "maxLength": 256
+                },
+                "enabled": {
+                  "type": "boolean"
+                }
+              }
+            }
+          }
         },
         "voiceInput.assistantSpeechEnabled": {
           "type": "boolean",
@@ -184,7 +345,7 @@
             "editor-only",
             "clipboard-only"
           ],
-          "description": "auto: text-tab → editor cursor; else clipboard + Ctrl+V via ydotool. paste-key: always clipboard+Ctrl+V (best for Unicode/Hebrew). type-key: type chars via ydotool (US-layout only). editor-only / clipboard-only as named."
+          "description": "auto: text-file tab → editor cursor; otherwise clipboard + the platform paste helper. paste-key preserves Unicode/RTL through the clipboard. type-key uses the platform typing helper and may depend on keyboard layout. editor-only / clipboard-only are restricted fallbacks."
         }
       }
     }
@@ -194,16 +355,21 @@
     "build": "node esbuild.js",
     "watch": "node esbuild.js --watch",
     "compile": "tsc -p ./",
+    "compile:webview": "tsc -p ./tsconfig.webview.json",
+    "typecheck": "npm run compile && npm run compile:webview",
     "lint": "eslint src --ext ts",
     "test": "tsx --test test/*.test.ts test/**/*.test.ts",
-    "publish": "bash scripts/release.sh"
+    "test:settings": "tsx --test test/settings-*.test.ts",
+    "release:verify": "npm run typecheck && npm run lint && npm test && npm run build",
+    "package": "bash scripts/release.sh"
   },
   "devDependencies": {
     "@picovoice/pvrecorder-node": "1.2.9",
     "@types/node": "^20.0.0",
-    "@types/vscode": "^1.90.0",
+    "@types/vscode": "^1.99.0",
     "@typescript-eslint/eslint-plugin": "^8.59.3",
     "@typescript-eslint/parser": "^8.59.3",
+    "@vscode/vsce": "3.9.2",
     "esbuild": "^0.20.0",
     "eslint": "^10.3.0",
     "tsx": "4.23.13",
