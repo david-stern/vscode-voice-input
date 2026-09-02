@@ -12,6 +12,7 @@
   "include": [
     "src/webview/mic.client.ts",
     "src/webview/settings.client.ts",
+    "src/webview/controlCenter/client.ts",
     "src/webview/protocol.ts",
     "src/webview/i18n.ts",
     "src/webview/speech.ts"

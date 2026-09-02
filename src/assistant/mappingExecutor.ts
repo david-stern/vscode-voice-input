@@ -22,6 +22,8 @@ export interface MappingExecutionHost {
     options: { input: JsonObject; toolInvocationToken: unknown | undefined },
     cancellationToken?: MappingCancellationToken,
   ): PromiseLike<unknown>;
+  getAuthoritySnapshot?(): { effective: boolean; epoch: number; fingerprint: string };
+  getTargetFingerprint?(): string;
 }
 
 export type MappingInvocationSource = 'voice' | 'agent';
@@ -31,6 +33,8 @@ export interface MappingInvocationOptions {
   toolInvocationToken?: unknown;
   cancellationToken?: MappingCancellationToken;
   expectedFingerprint?: string;
+  expectedAuthority?: { epoch: number; fingerprint: string };
+  expectedTargetFingerprint?: string;
 }
 
 export type MappingExecutionFailure =
@@ -41,6 +45,8 @@ export type MappingExecutionFailure =
   | 'mapping-disabled'
   | 'mapping-not-agent-enabled'
   | 'mapping-changed'
+  | 'authority-changed'
+  | 'target-changed'
   | 'target-unavailable'
   | 'invalid-voice-token'
   | 'outcome-unknown-do-not-retry'
@@ -102,6 +108,12 @@ export class CustomMappingExecutor {
       if (options.cancellationToken?.isCancellationRequested) {
         return { ok: false, reason: 'cancelled' };
       }
+      if (!this.authorityStillCurrent(options) || !this.targetStillCurrent(options)) {
+        return {
+          ok: false,
+          reason: !this.authorityStillCurrent(options) ? 'authority-changed' : 'target-changed',
+        };
+      }
 
       if (mapping.kind === 'command') {
         const commands = await this.host.getCommandIds();
@@ -113,6 +125,8 @@ export class CustomMappingExecutor {
           return { ok: false, reason: 'workspace-untrusted' };
         }
         if (!this.mappingStillCurrent(mapping)) return { ok: false, reason: 'mapping-changed' };
+        if (!this.authorityStillCurrent(options)) return { ok: false, reason: 'authority-changed' };
+        if (!this.targetStillCurrent(options)) return { ok: false, reason: 'target-changed' };
         dispatchBegan = true;
         await this.host.executeCommand(mapping.commandId, ...mapping.args);
       } else {
@@ -126,6 +140,8 @@ export class CustomMappingExecutor {
           return { ok: false, reason: 'workspace-untrusted' };
         }
         if (!this.mappingStillCurrent(mapping)) return { ok: false, reason: 'mapping-changed' };
+        if (!this.authorityStillCurrent(options)) return { ok: false, reason: 'authority-changed' };
+        if (!this.targetStillCurrent(options)) return { ok: false, reason: 'target-changed' };
         dispatchBegan = true;
         await this.host.invokeTool(
           mapping.toolName,
@@ -170,6 +186,29 @@ export class CustomMappingExecutor {
         mappings: [current],
       }).mappings[0];
       return validated !== undefined && fingerprintForExecution(validated) === fingerprintForExecution(mapping);
+    } catch {
+      return false;
+    }
+  }
+
+  private authorityStillCurrent(options: MappingInvocationOptions): boolean {
+    if (!options.expectedAuthority) return true;
+    try {
+      const current = this.host.getAuthoritySnapshot?.();
+      return Boolean(
+        current?.effective
+        && current.epoch === options.expectedAuthority.epoch
+        && current.fingerprint === options.expectedAuthority.fingerprint,
+      );
+    } catch {
+      return false;
+    }
+  }
+
+  private targetStillCurrent(options: MappingInvocationOptions): boolean {
+    if (options.expectedTargetFingerprint === undefined) return true;
+    try {
+      return this.host.getTargetFingerprint?.() === options.expectedTargetFingerprint;
     } catch {
       return false;
     }

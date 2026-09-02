@@ -495,6 +495,7 @@ test('runtime lifecycle starts once and disposes host resources in authority-fir
     metadata: { refresh: async () => { events.push('metadata'); } },
     devices: { get: async () => { events.push('devices'); return []; } },
     credentials: { offerInitialSonioxSetup: async () => { events.push('setup'); } },
+    credentialStore: { dispose: () => { events.push('credential-store'); } },
     state: { invalidate: () => { events.push('state'); } },
     settings: {
       refresh: async () => { events.push('settings-refresh'); },
@@ -520,17 +521,18 @@ test('runtime lifecycle starts once and disposes host resources in authority-fir
     'setup',
     'deactivating',
     'state',
+    'transcriptions',
+    'credential-store',
     'settings-dispose',
     'recording',
     'assistant',
     'mappings',
-    'transcriptions',
   ]);
 });
 
 test('startup resume requires every readiness gate and rechecks credentials without prompting', async () => {
   const cases = [
-    { name: 'not opted in', enabled: false, trusted: true, consent: true, devices: 1, kind: 'default', credentials: [true, true], starts: 0, setups: 1 },
+    { name: 'not opted in', enabled: false, trusted: true, consent: true, devices: 1, kind: 'default', credentials: [true, true], starts: 0, setups: 0 },
     { name: 'untrusted', enabled: true, trusted: false, consent: true, devices: 1, kind: 'default', credentials: [true, true], starts: 0, setups: 0 },
     { name: 'missing consent', enabled: true, trusted: true, consent: false, devices: 1, kind: 'default', credentials: [true, true], starts: 0, setups: 0 },
     { name: 'missing credential', enabled: true, trusted: true, consent: true, devices: 1, kind: 'default', credentials: [false], starts: 0, setups: 0 },
@@ -548,6 +550,7 @@ test('startup resume requires every readiness gate and rechecks credentials with
       metadata: { refresh: async () => undefined },
       devices: { get: async () => Array.from({ length: scenario.devices }, () => ({ id: 'mic', label: 'Mic' })) },
       credentials: { offerInitialSonioxSetup: async () => { setups += 1; } },
+      credentialStore: { dispose: () => undefined },
       state: { invalidate: () => undefined },
       settings: { refresh: async () => undefined, dispose: () => undefined },
       recording: { dispose: () => undefined },
@@ -672,9 +675,8 @@ test('microphone toggle messages leave pending-start authority with the host con
   assert.deepEqual(calls, ['toggle', 'start', 'stop']);
 });
 
-test('microphone router revalidates pending-send identity and writes typed settings', async () => {
+test('microphone router writes typed settings and opens host-owned management', async () => {
   const writes: unknown[] = [];
-  const cleared: boolean[] = [];
   let publications = 0;
   let settingsOpens = 0;
   const commands: string[] = [];
@@ -688,10 +690,7 @@ test('microphone router revalidates pending-send identity and writes typed setti
     recording: {} as never,
     devices: {} as never,
     metadata: {} as never,
-    assistant: {
-      state: { pendingSend: { id: 'current', preview: 'safe' } },
-      clearPendingSend: (announce) => { cleared.push(announce); },
-    } as never,
+    assistant: {} as never,
     mappings: {} as never,
     credentials: {} as never,
     state: {
@@ -702,8 +701,6 @@ test('microphone router revalidates pending-send identity and writes typed setti
     openSettingsCenter: async () => { settingsOpens += 1; },
   });
 
-  await router.route({ type: 'assistant-pending-send-cancel', id: 'stale' });
-  await router.route({ type: 'assistant-pending-send-cancel', id: 'current' });
   await router.route({
     type: 'settings-update',
     speechLang: 'en',
@@ -714,7 +711,6 @@ test('microphone router revalidates pending-send identity and writes typed setti
   await router.route({ type: 'open-settings-center' });
   await router.route({ type: 'assistant-provider-manage' });
 
-  assert.deepEqual(cleared, [true]);
   assert.deepEqual(writes, [{
     languageHint: 'en',
     uiLanguage: 'he',

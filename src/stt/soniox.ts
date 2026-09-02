@@ -1,3 +1,5 @@
+import { resolveSonioxModel } from '../sonioxMeta';
+
 const SONIOX_API = 'https://api.soniox.com/v1';
 const PROVIDER_ID_PATTERN = /^[A-Za-z0-9_-]{1,256}$/u;
 
@@ -35,12 +37,13 @@ export async function transcribe(opts: TranscribeOpts): Promise<string> {
     audio,
     mime,
     apiKey,
-    model,
+    model: configuredModel,
     languageHint,
     pollIntervalMs = 500,
     timeoutMs = 60_000,
     signal,
   } = opts;
+  const model = resolveSonioxModel(configuredModel, 'async');
 
   const baseMime = mime.split(';')[0].trim();
   const ext = baseMime.includes('ogg') ? 'ogg' : baseMime.includes('wav') ? 'wav' : 'webm';
@@ -128,8 +131,14 @@ export async function transcribe(opts: TranscribeOpts): Promise<string> {
   } finally {
     // Remote cleanup is intentionally best effort. A deletion failure must not
     // replace a successful transcript or mask the original transcription error.
-    if (txnId) await bestEffortDelete(`transcriptions/${txnId}`, apiKey);
-    if (fileId) await bestEffortDelete(`files/${fileId}`, apiKey);
+    // Revoked authority wins: never start another request with the stale key.
+    if (txnId && !signal?.aborted) {
+      await bestEffortDelete(`transcriptions/${txnId}`, apiKey, signal);
+    }
+    if (fileId && !signal?.aborted) {
+      await bestEffortDelete(`files/${fileId}`, apiKey, signal);
+    }
+    if (signal?.aborted) throw new DOMException('Aborted', 'AbortError');
   }
 }
 
@@ -158,10 +167,18 @@ function isAbortError(error: unknown): boolean {
   return error instanceof DOMException && error.name === 'AbortError';
 }
 
-async function bestEffortDelete(path: string, apiKey: string): Promise<void> {
+async function bestEffortDelete(
+  path: string,
+  apiKey: string,
+  authoritySignal?: AbortSignal,
+): Promise<void> {
+  if (authoritySignal?.aborted) return;
   const controller = new AbortController();
   const timer = setTimeout(() => controller.abort(), 5_000);
+  const abortForAuthority = () => controller.abort();
+  authoritySignal?.addEventListener('abort', abortForAuthority, { once: true });
   try {
+    if (controller.signal.aborted) return;
     await fetch(`${SONIOX_API}/${path}`, {
       method: 'DELETE',
       headers: { Authorization: `Bearer ${apiKey}` },
@@ -171,6 +188,7 @@ async function bestEffortDelete(path: string, apiKey: string): Promise<void> {
     // Cleanup support can vary by account/API version; never mask the result.
   } finally {
     clearTimeout(timer);
+    authoritySignal?.removeEventListener('abort', abortForAuthority);
   }
 }
 

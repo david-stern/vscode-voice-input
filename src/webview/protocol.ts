@@ -159,11 +159,7 @@ export type WebviewMessage =
   | { type: 'assistant-stop-speaking' }
   | { type: 'assistant-speech-started'; id: string }
   | { type: 'assistant-speech-finished'; id: string; outcome: SpeechOutcome }
-  | { type: 'assistant-pending-send-confirm'; id: string }
-  | { type: 'assistant-pending-send-cancel'; id: string }
   | { type: 'assistant-mappings-manage' }
-  | { type: 'assistant-pending-action-confirm'; id: string }
-  | { type: 'assistant-pending-action-cancel'; id: string }
   | { type: 'open-settings-center' }
   | {
       type: 'settings-update';
@@ -226,10 +222,6 @@ export function isWebviewMessage(value: unknown): value is WebviewMessage {
     case 'history-copy':
     case 'history-remove':
     case 'assistant-speech-started':
-    case 'assistant-pending-send-confirm':
-    case 'assistant-pending-send-cancel':
-    case 'assistant-pending-action-confirm':
-    case 'assistant-pending-action-cancel':
       return hasExactKeys(message, ['type', 'id']) && isBoundedString(message.id);
     case 'audio-device-change':
       return hasExactKeys(message, ['type', 'deviceId']) && isBoundedString(message.deviceId, true);

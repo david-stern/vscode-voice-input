@@ -380,6 +380,17 @@ export class PushToTalkController {
         }
         return;
       }
+      if (result.status !== 'completed') {
+        const openSettings = this.options.localize('Open settings', 'פתיחת הגדרות');
+        const selected = await this.options.ui.showError(
+          transcriptionUnavailableMessage(result.status, this.options.localize),
+          openSettings,
+        );
+        if (this.ownsPipeline(generation) && selected === openSettings) {
+          await this.options.ui.executeCommand('voiceInput.openSettings');
+        }
+        return;
+      }
       if (!result.text) return;
 
       const settings = this.options.settings.read().values;
@@ -446,4 +457,32 @@ function abortableDelay(ms: number, signal: AbortSignal): Promise<void> {
     };
     signal.addEventListener('abort', onAbort, { once: true });
   });
+}
+
+function transcriptionUnavailableMessage(
+  status: 'not-configured' | 'legacy-pending' | 'consent-required' | 'authority-changed',
+  localize: (english: string, hebrew: string) => string,
+): string {
+  switch (status) {
+    case 'not-configured':
+      return localize(
+        'Voice Input: Speech-to-text is not configured.',
+        'Voice Input: תמלול דיבור לטקסט אינו מוגדר.',
+      );
+    case 'legacy-pending':
+      return localize(
+        'Voice Input: The previous transcription setup needs review before audio can be sent.',
+        'Voice Input: יש לבדוק את הגדרת התמלול הקודמת לפני שניתן לשלוח שמע.',
+      );
+    case 'consent-required':
+      return localize(
+        'Voice Input: Remote transcription consent is required before audio can be sent.',
+        'Voice Input: נדרשת הסכמה לתמלול מרוחק לפני שניתן לשלוח שמע.',
+      );
+    case 'authority-changed':
+      return localize(
+        'Voice Input: Transcription authorization changed. Review the provider setup and try again.',
+        'Voice Input: הרשאת התמלול השתנתה. יש לבדוק את הגדרת הספק ולנסות שוב.',
+      );
+  }
 }

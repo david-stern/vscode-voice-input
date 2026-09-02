@@ -5,6 +5,7 @@ import test from 'node:test';
 import {
   ASSISTANT_CONSENT_KEY,
   CONFIGURATION_KEYS,
+  CONTROL_CENTER_SETUP_CHOICES_STORAGE_KEY,
   ConsentService,
   CredentialService,
   CUSTOM_MAPPING_ID_PATTERN,
@@ -17,6 +18,7 @@ import {
   SETTINGS_DEFAULTS,
   SETTING_NAMES,
   SettingsRepository,
+  SONIOX_CREDENTIAL_EPOCH_SECRET_KEY,
   SONIOX_SECRET_KEY,
   normalizeSettings,
   type ConfigurationInspection,
@@ -78,17 +80,25 @@ class MemoryGlobalState implements GlobalStatePort {
   }
 }
 
-test('persisted contract inventory freezes every v1.3 storage identity', () => {
+test('persisted contract inventory freezes every Wave 1 storage identity', () => {
   assert.deepEqual(PERSISTED_CONTRACT_INVENTORY.configuration, CONFIGURATION_KEYS);
   assert.deepEqual(PERSISTED_CONTRACT_INVENTORY.secrets, [
     SONIOX_SECRET_KEY,
+    SONIOX_CREDENTIAL_EPOCH_SECRET_KEY,
     DEEPSEEK_SECRET_KEY,
+    'voiceInput.autoModeInstallation.v1',
+    'voiceInput.sonioxRemoteConsentInstallation.v1',
   ]);
   assert.deepEqual(PERSISTED_CONTRACT_INVENTORY.globalState, [
     ASSISTANT_CONSENT_KEY,
     DEEPSEEK_CONSENT_KEY,
     HISTORY_STORAGE_KEY,
     CUSTOM_MAPPING_STORAGE_KEY,
+    'voiceInput.installMarker.v1',
+    CONTROL_CENTER_SETUP_CHOICES_STORAGE_KEY,
+    'voiceInput.autoModeReceipt.v1',
+    'voiceInput.sonioxRemoteConsent.v1',
+    'voiceInput.builtinCommandOverrides.v1',
   ]);
   assert.equal(PERSISTED_CONTRACT_INVENTORY.customMappings.schemaVersion, CUSTOM_MAPPING_SCHEMA_VERSION);
   assert.equal(PERSISTED_CONTRACT_INVENTORY.customMappings.opaqueIdPattern, CUSTOM_MAPPING_ID_PATTERN);

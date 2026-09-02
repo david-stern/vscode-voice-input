@@ -1,4 +1,9 @@
 import type { CredentialService, SettingsRepository } from '../../config';
+import {
+  SONIOX_SPEECH_CAPABILITIES,
+  type SpeechProviderCapabilities,
+} from '../../speech/contracts';
+import type { SpeechProviderRegistry } from '../../speech/providerRegistry';
 import { transcribe as transcribeWithSoniox } from '../../stt/soniox';
 
 export type TranscriptionLane = 'assistant' | 'push-to-talk' | 'setup';
@@ -10,7 +15,15 @@ export interface TranscriptionInput {
 
 export type TranscriptionResult =
   | { status: 'missing-credential' }
-  | { status: 'completed'; text: string };
+  | { status: 'completed'; text: string }
+  | {
+    status:
+      | 'not-configured'
+      | 'legacy-pending'
+      | 'consent-required'
+      | 'authority-changed';
+    text: '';
+  };
 
 export interface TranscriptionOperation {
   readonly signal: AbortSignal;
@@ -18,15 +31,24 @@ export interface TranscriptionOperation {
   dispose(): void;
 }
 
-export interface TranscriptionServiceOptions {
+export interface ProviderNeutralTranscriptionServiceOptions {
+  registry: Pick<SpeechProviderRegistry, 'capabilities' | 'transcribeFinal'>;
+}
+
+/** Temporary constructor compatibility until coordinator integration supplies the registry. */
+export interface LegacySonioxTranscriptionServiceOptions {
   credentials: Pick<CredentialService, 'use'>;
   settings: Pick<SettingsRepository, 'read'>;
   transcribe?: typeof transcribeWithSoniox;
 }
 
-/** Tracks abortable Soniox work by lifecycle lane and keeps the key inside CredentialService. */
+export type TranscriptionServiceOptions =
+  | ProviderNeutralTranscriptionServiceOptions
+  | LegacySonioxTranscriptionServiceOptions;
+
+/** Tracks provider-neutral abortable work by lifecycle lane. */
 export class TranscriptionService {
-  private readonly transcribeAudio: typeof transcribeWithSoniox;
+  private readonly transcribeAudio: typeof transcribeWithSoniox | undefined;
   private readonly operations: Record<TranscriptionLane, Set<AbortController>> = {
     assistant: new Set(),
     'push-to-talk': new Set(),
@@ -34,7 +56,15 @@ export class TranscriptionService {
   };
 
   constructor(private readonly options: TranscriptionServiceOptions) {
-    this.transcribeAudio = options.transcribe ?? transcribeWithSoniox;
+    this.transcribeAudio = 'registry' in options
+      ? undefined
+      : options.transcribe ?? transcribeWithSoniox;
+  }
+
+  get capabilities(): SpeechProviderCapabilities {
+    return 'registry' in this.options
+      ? this.options.registry.capabilities
+      : SONIOX_SPEECH_CAPABILITIES;
   }
 
   open(lane: TranscriptionLane): TranscriptionOperation {
@@ -45,9 +75,17 @@ export class TranscriptionService {
     return {
       signal: controller.signal,
       transcribe: async (input) => {
+        if ('registry' in this.options) {
+          const result = await this.options.registry.transcribeFinal(input, controller.signal);
+          if (result.status === 'ready') {
+            return { status: 'completed', text: result.value };
+          }
+          if (result.status === 'missing-credential') return { status: 'missing-credential' };
+          return { status: result.status, text: '' };
+        }
         const settings = this.options.settings.read().values;
         const text = await this.options.credentials.use('soniox', (apiKey) =>
-          this.transcribeAudio({
+          this.transcribeAudio!({
             audio: input.audio,
             mime: input.mime,
             apiKey,

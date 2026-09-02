@@ -1,6 +1,5 @@
 import { HttpConnectionProbe, type HttpConnectionProbeOptions } from './httpProbe';
-
-const SONIOX_MODELS_ENDPOINT = 'https://api.soniox.com/v1/models';
+import { SONIOX_MODELS_ENDPOINT } from '../sonioxMeta';
 
 export function createSonioxConnectionProbe(
   options: Omit<HttpConnectionProbeOptions, 'endpoint' | 'authorization'> = {},

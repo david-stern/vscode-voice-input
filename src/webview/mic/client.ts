@@ -1,6 +1,11 @@
 // Browser-side composition root: state projection, rendering, and messages.
 import type { HostMessage, ViewState, WebviewMessage } from '../protocol';
 import { resolveSpeakingState } from '../speech';
+import {
+  parseCompactMicHostMessage,
+  type CompactMicBrowserMessage,
+  type CompactMicState,
+} from './compactContracts';
 import { attachMicEventHandlers } from './events';
 import { createInitialMicState } from './state';
 import { MicSpeechClient } from './speechClient';
@@ -8,11 +13,12 @@ import { renderMicView } from './view';
 import { stringsFor } from './renderHelpers';
 
 declare const acquireVsCodeApi: () => {
-  postMessage: (message: WebviewMessage) => void;
+  postMessage: (message: WebviewMessage | CompactMicBrowserMessage) => void;
 };
 
 const vscode = acquireVsCodeApi();
 let state: ViewState = createInitialMicState();
+let compactState: CompactMicState | undefined;
 let shellEventsAttached = false;
 
 const speech = new MicSpeechClient({
@@ -25,7 +31,7 @@ function render(): void {
   const root = document.getElementById('root');
   if (!root) return;
 
-  renderMicView(root, state, speech.availableVoices);
+  renderMicView(root, state, speech.availableVoices, compactState);
   if (shellEventsAttached) return;
   attachMicEventHandlers({
     getState: () => state,
@@ -53,6 +59,12 @@ function announceHistoryStatus(message: string): void {
 }
 
 window.addEventListener('message', (event) => {
+  const compactMessage = parseCompactMicHostMessage(event.data);
+  if (compactMessage) {
+    compactState = compactMessage.payload;
+    render();
+    return;
+  }
   const message = event.data as HostMessage;
   switch (message?.type) {
     case 'init':
@@ -85,7 +97,7 @@ window.addEventListener('message', (event) => {
 
 function applyHostState(nextState: ViewState): void {
   const wasEnabled = speech.isHostStateInitialized && Boolean(state.assistantSpeechEnabled);
-  state = { ...state, ...nextState };
+  state = { ...createInitialMicState(), ...nextState };
   state.assistantSpeaking = resolveSpeakingState(state.assistantSpeaking, speech.activeId);
   speech.markHostStateInitialized();
   speech.syncEnabled(wasEnabled);

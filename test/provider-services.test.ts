@@ -1,7 +1,13 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { ConsentService, CredentialService, type GlobalStatePort, type SecretStoragePort } from '../src/config';
+import {
+  ConsentService,
+  CredentialService,
+  type GlobalStatePort,
+  type SecretStorageChange,
+  type SecretStoragePort,
+} from '../src/config';
 import {
   ConnectionTestController,
   ConnectionTestService,
@@ -16,11 +22,25 @@ import {
 class MemorySecrets implements SecretStoragePort {
   readonly values = new Map<string, string>();
   onGet: ((key: string) => Promise<string | undefined>) | undefined;
+  private readonly listeners = new Set<(event: SecretStorageChange) => unknown>();
   async get(key: string): Promise<string | undefined> {
     return this.onGet ? this.onGet(key) : this.values.get(key);
   }
-  async store(key: string, value: string): Promise<void> { this.values.set(key, value); }
-  async delete(key: string): Promise<void> { this.values.delete(key); }
+  async store(key: string, value: string): Promise<void> {
+    this.values.set(key, value);
+    this.emit(key);
+  }
+  async delete(key: string): Promise<void> {
+    this.values.delete(key);
+    this.emit(key);
+  }
+  onDidChange(listener: (event: SecretStorageChange) => unknown) {
+    this.listeners.add(listener);
+    return { dispose: () => this.listeners.delete(listener) };
+  }
+  private emit(key: string): void {
+    for (const listener of [...this.listeners]) listener({ key });
+  }
 }
 
 class MemoryState implements GlobalStatePort {
@@ -66,12 +86,17 @@ test('provider adapters discard bodies and return a fixed secret-free result', a
   const credentials = new CredentialService(secrets);
   await credentials.set('soniox', secret);
   const consent = new ConsentService(new MemoryState());
+  const sonioxAuthority = Object.freeze({ provider: 'soniox' });
   const service = new ConnectionTestService({
     credentials,
     consent,
     probes: {
       soniox: createSonioxConnectionProbe({ fetch }),
       deepseek: createPlannerConnectionProbe('deepseek', { fetch }),
+    },
+    sonioxAuthority: {
+      capture: () => sonioxAuthority,
+      revalidate: (candidate) => candidate === sonioxAuthority,
     },
   });
 
@@ -200,7 +225,7 @@ test('DeepSeek consent is rechecked after credential retrieval and before probe 
 
   assert.deepEqual(await pending, {
     provider: 'deepseek',
-    category: 'consent-required',
+    category: 'cancelled',
   });
   assert.equal(probes, 0);
 });
@@ -252,6 +277,85 @@ test('stale connection completions cannot publish over a newer revision', async 
   });
   pending[0]({ provider: 'soniox', category: 'unavailable' });
   assert.deepEqual(await first, { revision: 1, publish: false });
+});
+
+test('Soniox consent invalidation synchronously aborts an active connection probe', async () => {
+  const secrets = new MemorySecrets();
+  const credentials = new CredentialService(secrets);
+  await credentials.set('soniox', 'private-key');
+  const started = deferred<void>();
+  let probeSignal: AbortSignal | undefined;
+  let invalidateAuthority: (() => void) | undefined;
+  const authority = Object.freeze({ generation: 1 });
+  const service = new ConnectionTestService({
+    credentials,
+    consent: new ConsentService(new MemoryState()),
+    probes: {
+      soniox: {
+        probe: async (_credential, signal) => {
+          probeSignal = signal;
+          started.resolve(undefined);
+          await new Promise<void>((resolve) => {
+            signal?.addEventListener('abort', () => resolve(), { once: true });
+          });
+          return 'connected';
+        },
+      },
+    },
+    sonioxAuthority: {
+      capture: () => authority,
+      revalidate: (candidate) => candidate === authority,
+      onDidInvalidate: (listener) => {
+        invalidateAuthority = listener;
+        return { dispose: () => { invalidateAuthority = undefined; } };
+      },
+    },
+  });
+
+  const pending = service.test('soniox');
+  await started.promise;
+  invalidateAuthority?.();
+  assert.equal(probeSignal?.aborted, true);
+  assert.deepEqual(await pending, { provider: 'soniox', category: 'cancelled' });
+  service.dispose();
+});
+
+test('a second host SecretStorage replacement aborts the first host active Soniox probe', async () => {
+  const secrets = new MemorySecrets();
+  const firstHostCredentials = new CredentialService(secrets);
+  const secondHostCredentials = new CredentialService(secrets);
+  await firstHostCredentials.set('soniox', 'first-window-key');
+  const started = deferred<void>();
+  let probeSignal: AbortSignal | undefined;
+  const authority = Object.freeze({ generation: 1 });
+  const service = new ConnectionTestService({
+    credentials: firstHostCredentials,
+    consent: new ConsentService(new MemoryState()),
+    probes: {
+      soniox: {
+        probe: async (_credential, signal) => {
+          probeSignal = signal;
+          started.resolve(undefined);
+          await new Promise<void>((resolve) => {
+            signal?.addEventListener('abort', () => resolve(), { once: true });
+          });
+          return 'connected';
+        },
+      },
+    },
+    sonioxAuthority: {
+      capture: () => authority,
+      revalidate: (candidate) => candidate === authority,
+    },
+  });
+
+  const pending = service.test('soniox');
+  await started.promise;
+  await secondHostCredentials.set('soniox', 'second-window-key');
+
+  assert.equal(probeSignal?.aborted, true);
+  assert.deepEqual(await pending, { provider: 'soniox', category: 'cancelled' });
+  service.dispose();
 });
 
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {

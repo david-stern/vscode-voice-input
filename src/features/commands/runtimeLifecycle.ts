@@ -14,6 +14,7 @@ export interface HostRuntimeLifecycleOptions {
   metadata: Pick<TranscriptionMetadataService, 'refresh'>;
   devices: Pick<AudioDeviceService, 'get'>;
   credentials: Pick<CredentialCommandController, 'offerInitialSonioxSetup'>;
+  credentialStore: Pick<CredentialService, 'dispose'>;
   state: Pick<HostStatePublisher, 'invalidate'>;
   settings: { refresh(): Promise<void>; dispose(): void };
   recording: Pick<PushToTalkController, 'dispose'>;
@@ -70,7 +71,11 @@ export class HostRuntimeLifecycle {
       }
       return;
     }
-    await this.options.credentials.offerInitialSonioxSetup();
+    // Fresh Wave 1 installs select no STT provider. Startup must not turn that
+    // into a credential prompt or any Soniox work.
+    if (!resume || resume.settings.read().values.transcriptionProvider !== 'none') {
+      await this.options.credentials.offerInitialSonioxSetup();
+    }
   }
 
   dispose(): void {
@@ -78,11 +83,12 @@ export class HostRuntimeLifecycle {
     this.disposed = true;
     this.options.setDeactivating();
     this.options.state.invalidate();
+    this.options.transcriptions.abortAll();
+    this.options.credentialStore.dispose();
     this.options.settings.dispose();
     this.options.recording.dispose();
     this.options.assistant.dispose();
     this.options.mappings.dispose();
-    this.options.transcriptions.abortAll();
   }
 
   private resumeReady(

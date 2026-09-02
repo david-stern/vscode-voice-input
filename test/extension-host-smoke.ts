@@ -75,8 +75,19 @@ async function run() {
         'fresh Extension Host registered configuration key: ' + fullName,
       );
     }
+    const voiceConfiguration = vscode.workspace.getConfiguration('voiceInput');
+    assert.equal(
+      voiceConfiguration.get('transcriptionProvider'),
+      'none',
+      'a fresh Extension Host starts without a speech-to-text provider',
+    );
+    assert.equal(
+      voiceConfiguration.get('autoMode'),
+      false,
+      'a fresh Extension Host starts with requested Auto Mode off',
+    );
 
-    for (const bundleName of ['mic.client.js', 'settings.client.js']) {
+    for (const bundleName of ['mic.client.js', 'settings.client.js', 'controlCenter/client.js']) {
       const bundlePath = join(extension.extensionPath, 'out', 'webview', bundleName);
       const bundle = readFileSync(bundlePath, 'utf8');
       assert.ok(bundle.length > 100, 'webview bundle is loadable: ' + bundleName);
@@ -84,6 +95,17 @@ async function run() {
 
     await vscode.commands.executeCommand('workbench.view.extension.voiceInput');
     await vscode.commands.executeCommand('voiceInput.openSettings');
+    await vscode.commands.executeCommand('voiceInput.openControlCenter');
+    await vscode.commands.executeCommand('voiceInput.openControlCenter');
+    await delay(250);
+    const controlCenterTabs = vscode.window.tabGroups.all
+      .flatMap((group) => group.tabs)
+      .filter((tab) => tab.label === 'Voice Input Control Center');
+    assert.equal(
+      controlCenterTabs.length,
+      1,
+      'legacy and canonical launchers reveal one Control Center tab',
+    );
     const readiness = await waitForWebviewReadiness(5_000);
     assert.deepEqual(
       readiness,
@@ -113,6 +135,9 @@ async function main(): Promise<void> {
     readFile(join(projectRoot, 'out', 'extension.js')),
     readFile(join(projectRoot, 'out', 'webview', 'mic.client.js')),
     readFile(join(projectRoot, 'out', 'webview', 'settings.client.js')),
+    readFile(join(projectRoot, 'out', 'webview', 'controlCenter', 'client.js')),
+    readFile(join(projectRoot, 'out', 'webview', 'controlCenter', 'styles.css')),
+    readFile(join(projectRoot, 'out', 'licenses', 'WS-LICENSE.txt')),
   ]);
 
   const temporaryRoot = await mkdtemp(join(tmpdir(), 'voice-input-extension-host-'));
@@ -149,9 +174,21 @@ async function main(): Promise<void> {
       `--extensionTestsPath=${runnerPath}`,
       workspaceDirectory,
     ];
-    const exitCode = await launch(codeExecutable, args, environment);
-    assert.equal(exitCode, 0, `${basename(codeExecutable)} Extension Host smoke exited successfully`);
-    console.log('Extension Host smoke passed on a fresh profile and read-only workspace.');
+    const freshExitCode = await launch(codeExecutable, args, environment);
+    assert.equal(
+      freshExitCode,
+      0,
+      `${basename(codeExecutable)} fresh-profile Extension Host smoke exited successfully`,
+    );
+    const reloadExitCode = await launch(codeExecutable, args, environment);
+    assert.equal(
+      reloadExitCode,
+      0,
+      `${basename(codeExecutable)} same-profile reload smoke exited successfully`,
+    );
+    console.log(
+      'Extension Host smoke passed on a fresh profile and same-profile reload in a read-only workspace.',
+    );
   } finally {
     await chmod(workspaceDirectory, 0o755).catch(() => undefined);
     await rm(temporaryRoot, { recursive: true, force: true });

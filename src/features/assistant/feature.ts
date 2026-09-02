@@ -6,6 +6,8 @@ import {
   type MappingApprovalStore,
 } from '../../agents';
 import type { PcmStreamHandle, PcmStreamOptions } from '../../recorder/native';
+import type { StreamingTranscriptEvent } from '../../speech/contracts';
+import type { SpeechProviderRegistry } from '../../speech/providerRegistry';
 import type { PendingAssistantSend } from '../../webview/protocol';
 import type { MappingFeature } from '../mappings';
 import type { AudioDeviceService, PushToTalkController, TranscriptionService } from '../recording';
@@ -50,6 +52,12 @@ export interface AssistantFeatureOptions {
   isDeactivating(): boolean;
   localize(english: string, hebrew: string): string;
   log(message: string): void;
+  speechProviders?: Pick<SpeechProviderRegistry, 'openStreaming'>;
+  onTranscript?(event: StreamingTranscriptEvent): void;
+  autoMode?: {
+    snapshot(): { effective: boolean; epoch: number; fingerprint: string };
+    onWillChange(listener: () => void): { dispose(): void };
+  };
 }
 
 export interface AssistantFeatureState {
@@ -95,6 +103,7 @@ export class AssistantFeature {
     this.authority = new AgentAuthorityPolicy({
       approvals: options.mappingApprovals,
       agents: options.agents,
+      autoMode: options.autoMode,
     });
     this.actions = new AssistantActionController({
       host: options.actionHost,
@@ -127,6 +136,8 @@ export class AssistantFeature {
       startPcmStream: options.startPcmStream,
       publish: options.publish,
       isDeactivating: options.isDeactivating,
+      speechProviders: options.speechProviders,
+      onTranscript: options.onTranscript,
     });
   }
 

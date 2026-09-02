@@ -21,6 +21,11 @@ export function registerVsCodeHostLifecycle(
     vscode.window.onDidChangeWindowState((state) => controller.windowFocusChanged(state.focused)),
     vscode.window.tabGroups.onDidChangeTabs(() => controller.targetChanged()),
     vscode.window.onDidChangeActiveTextEditor(() => controller.targetChanged()),
+    vscode.window.onDidChangeTextEditorSelection(() => controller.targetChanged()),
+    vscode.workspace.onDidChangeTextDocument((event) => {
+      if (event.document === vscode.window.activeTextEditor?.document) controller.targetChanged();
+    }),
+    vscode.workspace.onDidChangeWorkspaceFolders(() => controller.targetChanged()),
     vscode.window.onDidChangeActiveTerminal(() => controller.targetChanged()),
   ];
 }

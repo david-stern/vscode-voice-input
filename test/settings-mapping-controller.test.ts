@@ -184,6 +184,46 @@ test('storage is reloaded before mutation and external changes invalidate the re
   assert.equal(storage.updates, 0);
 });
 
+test('visible-form edit revalidates the public target and preserves host-only args only for that exact target', async () => {
+  const { controller, host, store, invalidations } = setup();
+  host.catalog.commands.add('editor.action.copyLinesDownAction');
+  const revision = controller.snapshot().revision;
+  const edited = await controller.editVisible(INITIAL_ID, {
+    label: 'Format safely', description: 'Updated', phrases: ['format safely'],
+    kind: 'command', targetId: 'editor.action.formatDocument',
+    enabled: true, agentEnabled: false,
+  }, revision);
+  assert.equal(edited.status, 'accepted');
+  assert.deepEqual(store.get(ROTATED_ID)?.kind === 'command'
+    ? store.get(ROTATED_ID)?.args : undefined,
+  [{ private: 'never-cross-the-settings-boundary' }]);
+  assert.equal(invalidations(), 1);
+
+  const changed = setup();
+  changed.host.catalog.commands.add('editor.action.copyLinesDownAction');
+  const changedTarget = await changed.controller.editVisible(INITIAL_ID, {
+    label: 'Copy line', description: '', phrases: ['copy line safely'],
+    kind: 'command', targetId: 'editor.action.copyLinesDownAction',
+    enabled: true, agentEnabled: false,
+  }, changed.controller.snapshot().revision);
+  assert.equal(changedTarget.status, 'accepted');
+  const saved = changed.store.get(ROTATED_ID);
+  assert.ok(saved?.kind === 'command');
+  assert.deepEqual(saved.args, []);
+});
+
+test('visible-form add rejects unavailable targets without persisting or invalidating authority', async () => {
+  const { controller, storage, invalidations } = setup();
+  const result = await controller.addVisible({
+    label: 'Unsafe target', description: '', phrases: ['unsafe target'],
+    kind: 'command', targetId: 'workbench.action.notRegistered',
+    enabled: true, agentEnabled: false,
+  }, controller.snapshot().revision);
+  assert.equal(result.status, 'failed');
+  assert.equal(storage.updates, 0);
+  assert.equal(invalidations(), 0);
+});
+
 test('mapping facade exposes only effective approval state and defaults to none', () => {
   const options = {
     storage: new MemoryStorage([commandMapping()]),

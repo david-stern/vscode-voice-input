@@ -9,6 +9,13 @@ import type {
 
 /** VS Code runtime adapter for the fail-closed custom mapping executor. */
 export class VsCodeMappingExecutionHost implements MappingExecutionHost {
+  constructor(
+    private readonly authority?: {
+      snapshot(): { effective: boolean; epoch: number; fingerprint: string };
+    },
+    private readonly targetFingerprint?: () => string,
+  ) {}
+
   isWorkspaceTrusted(): boolean {
     return vscode.workspace.isTrusted;
   }
@@ -19,6 +26,18 @@ export class VsCodeMappingExecutionHost implements MappingExecutionHost {
 
   getToolNames(): readonly string[] {
     return vscode.lm.tools.map((tool) => tool.name);
+  }
+
+  getAuthoritySnapshot() {
+    return this.authority?.snapshot() ?? {
+      effective: false,
+      epoch: 0,
+      fingerprint: 'mapping:unconfigured',
+    };
+  }
+
+  getTargetFingerprint(): string {
+    return this.targetFingerprint?.() ?? 'mapping:unconfigured';
   }
 
   executeCommand(commandId: string, ...args: JsonValue[]): PromiseLike<unknown> {

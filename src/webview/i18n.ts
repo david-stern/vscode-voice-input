@@ -291,8 +291,3 @@ export const STRINGS: Record<UiLang, Strings> = {
     pendingActionCancel: 'Cancel',
   },
 };
-
-export {
-  SETTINGS_STRINGS,
-  type SettingsStrings,
-} from './settings/i18n';

@@ -2,7 +2,11 @@ import {
   PROVIDER_IDS as PLANNER_PROVIDER_IDS,
   type ProviderId as PlannerProviderId,
 } from '../inference';
-import { DEEPSEEK_SECRET_KEY, SONIOX_SECRET_KEY } from './contracts';
+import {
+  DEEPSEEK_SECRET_KEY,
+  SONIOX_CREDENTIAL_EPOCH_SECRET_KEY,
+  SONIOX_SECRET_KEY,
+} from './contracts';
 
 export const ANTHROPIC_SECRET_KEY = 'ANTHROPIC_API_KEY';
 export const OPENAI_SECRET_KEY = 'OPENAI_API_KEY';
@@ -30,10 +34,19 @@ export const PROVIDER_SECRET_KEYS: Readonly<Record<ProviderId, string>> = Object
   grok: GROK_SECRET_KEY,
 });
 
+export interface CredentialDisposable {
+  dispose(): void;
+}
+
+export interface SecretStorageChange {
+  readonly key: string;
+}
+
 export interface SecretStoragePort {
   get(key: string): PromiseLike<string | undefined>;
   store(key: string, value: string): PromiseLike<void>;
   delete(key: string): PromiseLike<void>;
+  onDidChange?(listener: (event: SecretStorageChange) => unknown): CredentialDisposable;
 }
 
 export interface CredentialStatus {
@@ -46,10 +59,6 @@ export interface CredentialInvalidation {
   revision: number;
 }
 
-export interface CredentialDisposable {
-  dispose(): void;
-}
-
 export function providerRequiresCredential(provider: ProviderId): boolean {
   return provider !== 'ollama';
 }
@@ -58,10 +67,17 @@ export function providerRequiresCredential(provider: ProviderId): boolean {
 export class CredentialService {
   private readonly forcedMissing = new Set<ProviderId>();
   private readonly revocationRevisions = new Map<ProviderId, number>();
+  private readonly mutationRevisions = new Map<ProviderId, number>();
   private readonly mutationTails = new Map<ProviderId, Promise<void>>();
   private readonly invalidationListeners = new Set<(event: CredentialInvalidation) => void>();
+  private readonly storageSubscription: CredentialDisposable | undefined;
 
-  constructor(private readonly storage: SecretStoragePort) {}
+  constructor(private readonly storage: SecretStoragePort) {
+    this.storageSubscription = storage.onDidChange?.((event) => {
+      const provider = providerForSecretKey(event?.key);
+      if (provider) this.invalidate(provider, false);
+    });
+  }
 
   onDidInvalidate(listener: (event: CredentialInvalidation) => void): CredentialDisposable {
     this.invalidationListeners.add(listener);
@@ -72,23 +88,45 @@ export class CredentialService {
     return this.revocationRevisions.get(provider) ?? 0;
   }
 
+  /** Durable, secret-scoped binding for machine-local Soniox consent receipts. */
+  async persistentRevision(provider: ProviderId): Promise<number> {
+    if (provider !== 'soniox') return this.revision(provider);
+    const raw = await this.storage.get(SONIOX_CREDENTIAL_EPOCH_SECRET_KEY);
+    if (raw === undefined) return 0;
+    if (!/^(?:0|[1-9][0-9]{0,15})$/u.test(raw)) {
+      throw new Error('credential epoch is unavailable');
+    }
+    const revision = Number(raw);
+    if (!Number.isSafeInteger(revision) || revision < 0) {
+      throw new Error('credential epoch is unavailable');
+    }
+    return revision;
+  }
+
   async set(provider: ProviderId, credential: string): Promise<CredentialStatus> {
     const normalized = normalizeCredential(credential);
     if (!normalized) return this.status(provider);
-    const expectedRevocation = this.revision(provider);
+    // Creation and replacement are authority changes too. Close every active
+    // connection/prompt synchronously before the new secret is persisted.
+    const expectedMutation = this.beginMutation(provider);
     return this.serialize(provider, async () => {
+      await this.advancePersistentRevision(provider);
       await this.storage.store(PROVIDER_SECRET_KEYS[provider], normalized);
-      if (expectedRevocation === this.revision(provider)) {
+      const configured = Boolean(normalizeCredential(
+        await this.storage.get(PROVIDER_SECRET_KEYS[provider]),
+      ));
+      if (expectedMutation === this.mutationRevision(provider)) {
         this.forcedMissing.delete(provider);
-        return { provider, configured: true };
+        return { provider, configured };
       }
       return { provider, configured: false };
     });
   }
 
   clear(provider: ProviderId): Promise<CredentialStatus> {
-    this.invalidate(provider);
+    this.beginMutation(provider);
     return this.serialize(provider, async () => {
+      await this.advancePersistentRevision(provider);
       await this.storage.delete(PROVIDER_SECRET_KEYS[provider]);
       return { provider, configured: false };
     });
@@ -146,14 +184,34 @@ export class CredentialService {
     return operation(credential);
   }
 
-  private invalidate(provider: ProviderId): void {
+  dispose(): void {
+    this.storageSubscription?.dispose();
+    this.invalidationListeners.clear();
+  }
+
+  private beginMutation(provider: ProviderId): number {
+    const current = this.mutationRevision(provider);
+    if (current >= Number.MAX_SAFE_INTEGER) {
+      throw new RangeError('credential mutation revision cannot advance');
+    }
+    const revision = current + 1;
+    this.mutationRevisions.set(provider, revision);
+    this.invalidate(provider, true);
+    return revision;
+  }
+
+  private mutationRevision(provider: ProviderId): number {
+    return this.mutationRevisions.get(provider) ?? 0;
+  }
+
+  private invalidate(provider: ProviderId, forceMissing: boolean): void {
     const current = this.revision(provider);
     if (current >= Number.MAX_SAFE_INTEGER) {
       throw new RangeError('credential revision cannot advance');
     }
     const revision = current + 1;
     this.revocationRevisions.set(provider, revision);
-    this.forcedMissing.add(provider);
+    if (forceMissing) this.forcedMissing.add(provider);
     const event = Object.freeze({ provider, revision });
     for (const listener of [...this.invalidationListeners]) {
       try {
@@ -162,6 +220,15 @@ export class CredentialService {
         // Revocation remains synchronous even when an observer fails.
       }
     }
+  }
+
+  private async advancePersistentRevision(provider: ProviderId): Promise<void> {
+    if (provider !== 'soniox') return;
+    const current = await this.persistentRevision(provider);
+    if (current >= Number.MAX_SAFE_INTEGER) {
+      throw new RangeError('credential epoch cannot advance');
+    }
+    await this.storage.store(SONIOX_CREDENTIAL_EPOCH_SECRET_KEY, String(current + 1));
   }
 
   private serialize<T>(provider: ProviderId, operation: () => Promise<T>): Promise<T> {
@@ -179,4 +246,9 @@ function normalizeCredential(value: string | undefined): string | undefined {
     return undefined;
   }
   return normalized;
+}
+
+function providerForSecretKey(key: unknown): ProviderId | undefined {
+  if (typeof key !== 'string') return undefined;
+  return PROVIDER_IDS.find((provider) => PROVIDER_SECRET_KEYS[provider] === key);
 }

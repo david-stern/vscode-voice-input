@@ -24,6 +24,12 @@ export interface MetadataState {
   error?: string;
 }
 
+export interface MetadataNetworkAuthority {
+  selected(): boolean;
+  capture(): PromiseLike<Readonly<object> | undefined> | Readonly<object> | undefined;
+  revalidate(authority: Readonly<object>): PromiseLike<boolean> | boolean;
+}
+
 /** Owns best-effort Soniox metadata refresh without exposing the credential. */
 export class TranscriptionMetadataService {
   private revision = 0;
@@ -37,6 +43,7 @@ export class TranscriptionMetadataService {
     private readonly credentials: Pick<CredentialService, 'status' | 'use'>,
     private readonly view: MetadataViewPort,
     private readonly logger: (message: string) => void,
+    private readonly networkAuthority?: MetadataNetworkAuthority,
   ) {}
 
   get state(): MetadataState {
@@ -57,12 +64,26 @@ export class TranscriptionMetadataService {
     let languages = this.metadata.languages;
     let metadataError: string | undefined;
     const tasks: Promise<void>[] = [];
+    if (this.networkAuthority && !this.networkAuthority.selected()) {
+      this.logger('Soniox not selected — publishing packaged metadata without network');
+      this.metadata.loading = false;
+      this.publish();
+      return;
+    }
     const configured = (await this.credentials.status('soniox')).configured;
     if (revision !== this.revision) return;
-    if (configured) {
+    const authority = configured && this.networkAuthority
+      ? await this.captureNetworkAuthority()
+      : undefined;
+    if (revision !== this.revision) return;
+    if (configured && (!this.networkAuthority || authority)) {
       tasks.push(this.credentials.use('soniox', async (apiKey) => {
+        if (authority && !await this.networkAuthority!.revalidate(authority)) return;
         try {
-          models = await fetchModels(apiKey);
+          [models, languages] = await Promise.all([
+            fetchModels(apiKey),
+            fetchLanguages(),
+          ]);
           this.logger(`models fetched: ${models.length}`);
         } catch {
           this.logger('models fetch failed: unavailable');
@@ -70,11 +91,8 @@ export class TranscriptionMetadataService {
         }
       }).then(() => undefined));
     } else {
-      this.logger('no api key — skipping model fetch');
+      this.logger('Soniox metadata gate incomplete — skipping network fetch');
     }
-    tasks.push(fetchLanguages()
-      .then((fetchedLanguages) => { languages = fetchedLanguages; })
-      .catch(() => { this.logger('languages fetch failed: unavailable'); }));
     await Promise.all(tasks);
     if (revision !== this.revision) return;
     this.metadata.models = models;
@@ -82,6 +100,18 @@ export class TranscriptionMetadataService {
     this.metadata.error = metadataError;
     this.metadata.loading = false;
     this.publish();
+  }
+
+  private async captureNetworkAuthority(): Promise<Readonly<object> | undefined> {
+    if (!this.networkAuthority) return undefined;
+    try {
+      const authority = await this.networkAuthority.capture();
+      return authority && await this.networkAuthority.revalidate(authority)
+        ? authority
+        : undefined;
+    } catch {
+      return undefined;
+    }
   }
 
   private publish(): void {

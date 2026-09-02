@@ -5,6 +5,7 @@ import {
 } from '../../assistant';
 import type { TargetSnapshot } from '../../assistant/context';
 import type { MappingApprovalStore } from '../../agents';
+import type { PendingBuiltinSummary } from '../../commands';
 import type { AssistantMappingSummary, PendingAssistantAction } from '../../webview/protocol';
 import type { Revision } from '../../webview/protocol';
 import { registerAgentMappingTools } from './agentTools';
@@ -12,6 +13,7 @@ import {
   MappingManagementController,
   type MappingCollectionSnapshot,
   type MappingMutationResult,
+  type VisibleMappingDraft,
 } from './managementController';
 import {
   PendingActionController,
@@ -24,7 +26,17 @@ import type {
   MappingExecutionHost,
   MappingManagementHost,
 } from './ports';
-import { routeVoiceMappingRequest } from './voiceRequestRouter';
+import {
+  routeVoiceMappingRequest,
+  type BuiltinVoiceRequestPort,
+} from './voiceRequestRouter';
+
+export interface BuiltinVoiceIntegration extends BuiltinVoiceRequestPort {
+  readonly pendingSummary: PendingBuiltinSummary | undefined;
+  confirmPending(): Promise<void>;
+  cancel(): void;
+  dispose?(): void;
+}
 
 export interface MappingFeatureOptions {
   storage: MappingStorage;
@@ -41,6 +53,12 @@ export interface MappingFeatureOptions {
   clearPendingSend(): void;
   speak(message: string): void;
   publish(): Promise<void> | void;
+  builtins?: BuiltinVoiceIntegration;
+  autoMode?: {
+    snapshot(): { effective: boolean; epoch: number; fingerprint: string };
+    onWillChange(listener: () => void): { dispose(): void };
+  };
+  targetFingerprint?(snapshot: TargetSnapshot): string;
 }
 
 /** Stable host facade for mapping storage, native management, voice authority and Agent tools. */
@@ -65,6 +83,8 @@ export class MappingFeature {
       speak: options.speak,
       publish: () => { void options.publish(); },
       localize: options.localize,
+      autoMode: options.autoMode,
+      targetFingerprint: options.targetFingerprint,
     });
     this.management = new MappingManagementController({
       store: this.store,
@@ -79,6 +99,10 @@ export class MappingFeature {
 
   get pendingAction(): PendingAssistantAction | undefined {
     return this.pending.state;
+  }
+
+  get pendingBuiltin(): PendingBuiltinSummary | undefined {
+    return this.options.builtins?.pendingSummary;
   }
 
   summary(): AssistantMappingSummary {
@@ -112,6 +136,11 @@ export class MappingFeature {
 
   cancel(announce = false): void {
     this.pending.cancel(announce);
+    this.options.builtins?.cancel();
+  }
+
+  confirmPendingBuiltin(): Promise<void> {
+    return this.options.builtins?.confirmPending() ?? Promise.resolve();
   }
 
   routeVoiceRequest(
@@ -119,7 +148,13 @@ export class MappingFeature {
     snapshot: TargetSnapshot,
     utteranceId: string,
   ): Promise<{ handled: boolean; kind: 'confirmation' | 'mapping' | 'unmatched' }> {
-    return routeVoiceMappingRequest(postWakeText, snapshot, utteranceId, this);
+    return routeVoiceMappingRequest(
+      postWakeText,
+      snapshot,
+      utteranceId,
+      this,
+      this.options.builtins,
+    );
   }
 
   manage(): Promise<void> {
@@ -136,6 +171,21 @@ export class MappingFeature {
 
   settingsEdit(id: string, expectedRevision: Revision): Promise<MappingMutationResult> {
     return this.management.edit(id, expectedRevision);
+  }
+
+  settingsAddVisible(
+    draft: VisibleMappingDraft,
+    expectedRevision: Revision,
+  ): Promise<MappingMutationResult> {
+    return this.management.addVisible(draft, expectedRevision);
+  }
+
+  settingsEditVisible(
+    id: string,
+    draft: VisibleMappingDraft,
+    expectedRevision: Revision,
+  ): Promise<MappingMutationResult> {
+    return this.management.editVisible(id, draft, expectedRevision);
   }
 
   settingsToggleEnabled(id: string, expectedRevision: Revision): Promise<MappingMutationResult> {
@@ -182,5 +232,6 @@ export class MappingFeature {
 
   dispose(): void {
     this.pending.dispose();
+    this.options.builtins?.dispose?.();
   }
 }

@@ -4,6 +4,26 @@ All notable changes to **Voice Input** are documented here. Format follows [Keep
 
 ## [Unreleased]
 
+## [2.1.0] — 2026-09-02
+
+### Added
+
+- A singleton, serializer-backed Control Center with compatibility deep links from the retained launcher-only Settings view and a compact status/microphone sidebar.
+- An exact 100-command bilingual built-in catalog with bounded overrides, typed executors, local VS Code Git API actions, 25-row pagination, and fail-closed remote Git availability.
+- Host-owned Auto Mode with a native enable warning, machine/profile-local receipt and epoch, immediate status-bar kill switch, and context-bound invalidation. Auto skips only extension-owned confirmation; it does not bypass trust, finalized speech, validation, target revalidation, native Git prompts, cancellation, or unknown-outcome no-retry behavior.
+- Provider-neutral speech contracts and an optional Soniox realtime WebSocket path. Realtime partials are display-only and only final text reaches wake, safety, matching, or planning; push-to-talk retains final-WAV asynchronous compatibility.
+
+### Changed
+
+- Fresh profiles now persist `voiceInput.transcriptionProvider=none`. Soniox requires explicit selection, a SecretStorage key, and a native machine-local remote-processing consent before speech networking. Upgrades with a locally detected legacy key preserve Soniox; uncertain legacy state remains locally repairable without a network lookup.
+- Existing system speech settings are preserved on upgrade and remain available as a temporary, OS-dependent option. They are not a bundled local TTS implementation.
+
+### Security, privacy, and evidence boundaries
+
+- Selection, credential, consent, profile, trust, focus, target, and panel-generation changes invalidate the corresponding pending or active speech/action authority before delayed persistence can restore it.
+- The Wave 1 package contains no local speech runtime, helper, model, weights, active model manifest, or downloader. The separate local-speech track remains pending; Soniox and system speech are not evidence that it is complete.
+- The production WebSocket client is bundled from `ws` 8.21.3 with compression disabled and without its optional native acceleration packages.
+
 ## [2.0.0] — 2026-08-31
 
 ### Added

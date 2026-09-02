@@ -453,6 +453,92 @@ test('listening consent revoke cancels capture and speech before delayed persist
   assert.equal(storedConsent, false);
 });
 
+test('realtime partials are display-only and only finalized text crosses the wake and mapping boundary', async () => {
+  let frameSink: ((frame: Int16Array) => void) | undefined;
+  let transcriptSink: ((event: { kind: 'partial' | 'final'; text: string }) => void) | undefined;
+  const displayed: string[] = [];
+  const routed: string[] = [];
+  let markedDispatched = 0;
+  const abort = new AbortController();
+  const streaming = {
+    state: 'streaming' as const,
+    signal: abort.signal,
+    reconnectAllowed: false,
+    start: async () => undefined,
+    sendPcm16: () => undefined,
+    finalize: async () => 'assistant open terminal',
+    finish: async () => undefined,
+    markDispatched: () => { markedDispatched += 1; },
+    cancel: () => abort.abort(),
+  };
+  const controller = new AssistantSessionController({
+    settings: { read: () => ({ values: { ...SETTINGS_DEFAULTS }, workspaceOverrides: [] }) },
+    credentials: { status: async () => ({ provider: 'soniox', configured: true }) },
+    consents: {
+      status: () => ({ id: 'assistant-listening', acknowledged: true }),
+      revision: () => 0,
+      acknowledgeIfCurrent: async () => true,
+    },
+    devices: { get: async () => [] },
+    recording: { cancel: async () => undefined } as unknown as PushToTalkController,
+    transcriptions: { abort: () => undefined } as unknown as TranscriptionService,
+    mappings: {
+      cancel: () => undefined,
+      routeVoiceRequest: async (text: string) => {
+        routed.push(text);
+        return { handled: true, kind: 'mapping' as const };
+      },
+    } as unknown as MappingFeature,
+    planning: { invalidate: () => undefined } as unknown as AssistantPlanningService,
+    actions: { clearPending: () => undefined } as unknown as AssistantActionController,
+    feedback: { cancelSpeaking: () => undefined } as unknown as AssistantFeedbackController,
+    sequence: { next: () => 'utterance-1' } as AssistantIdSequence,
+    target: { capture: () => snapshot, forRequestedTarget: (value) => value },
+    status: { idle: () => {}, listening: () => {}, transcribing: () => {}, stoppedWithError: () => {} },
+    ui: {
+      confirmListeningDisclosure: async () => true,
+      showMissingSonioxCredential: async () => false,
+      showError: async () => undefined,
+      executeCommand: async () => undefined,
+    },
+    speechProviders: {
+      openStreaming: async (options) => {
+        transcriptSink = options.onTranscript;
+        return { status: 'ready', capabilities: {
+          provider: 'soniox', finalOnly: false, streamingPartials: true, remoteProcessing: true,
+        }, value: streaming };
+      },
+    },
+    onTranscript: (event) => displayed.push(`${event.kind}:${event.text}`),
+    startPcmStream: async (options) => {
+      frameSink = options.onFrame;
+      return {
+        sampleRate: 16_000,
+        selectedDevice: 'mic-1',
+        outcome: new Promise(() => undefined),
+        cancel: () => undefined,
+        stop: async () => ({ reason: 'cancelled' as const }),
+      };
+    },
+    publish: () => undefined,
+    isDeactivating: () => false,
+    setTimer: () => 1 as unknown as ReturnType<typeof setTimeout>,
+    clearTimer: () => undefined,
+  });
+
+  await controller.start();
+  transcriptSink?.({ kind: 'partial', text: 'assistant delete everything' });
+  assert.deepEqual(displayed, ['partial:assistant delete everything']);
+  assert.deepEqual(routed, []);
+  frameSink?.(new Int16Array(4_000).fill(12_000));
+  frameSink?.(new Int16Array(14_400));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  await new Promise<void>((resolve) => setImmediate(resolve));
+  assert.deepEqual(routed, ['open terminal']);
+  assert.equal(markedDispatched, 1);
+  await controller.stop();
+});
+
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((accept) => { resolve = accept; });

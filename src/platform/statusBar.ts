@@ -9,6 +9,10 @@ export interface RecordingIndicatorPort {
   postRecording(recording: boolean): void;
 }
 
+export interface AutoModeStatusPort {
+  disableCommandId: string;
+}
+
 /** Presents recording/assistant state without owning either workflow. */
 export class VoiceInputStatusBar implements
   RecordingStatusPort,
@@ -19,15 +23,36 @@ export class VoiceInputStatusBar implements
     vscode.StatusBarAlignment.Right,
     100,
   );
+  private readonly autoItem: vscode.StatusBarItem | undefined;
 
   constructor(
     private readonly indicator: RecordingIndicatorPort,
     private readonly assistantActive: () => boolean,
     private readonly localize: NativeLocalize,
+    autoMode?: AutoModeStatusPort,
   ) {
     this.item.command = 'voiceInput.toggleRecording';
     this.idle();
     this.item.show();
+    this.autoItem = autoMode
+      ? vscode.window.createStatusBarItem(vscode.StatusBarAlignment.Right, 101)
+      : undefined;
+    if (this.autoItem && autoMode) {
+      this.autoItem.text = '$(shield) AUTO';
+      this.autoItem.name = 'Voice Input Auto Mode';
+      this.autoItem.tooltip = this.text(
+        'Auto Mode is active. Click to disable it immediately.',
+        'מצב Auto פעיל. לחיצה תשבית אותו מיד.',
+      );
+      this.autoItem.command = autoMode.disableCommandId;
+      this.autoItem.backgroundColor = new vscode.ThemeColor('statusBarItem.warningBackground');
+    }
+  }
+
+  setAutoModeEffective(effective: boolean): void {
+    if (!this.autoItem) return;
+    if (effective) this.autoItem.show();
+    else this.autoItem.hide();
   }
 
   idle(): void {
@@ -124,6 +149,7 @@ export class VoiceInputStatusBar implements
 
   dispose(): void {
     this.item.dispose();
+    this.autoItem?.dispose();
   }
 
   private text(english: string, hebrew: string): string {

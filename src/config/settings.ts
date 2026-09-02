@@ -1,6 +1,10 @@
 import { normalizePersonaId, type PersonaId } from '../assistant/personas';
 import { DEFAULT_DEEPSEEK_MODEL } from '../assistant/deepseek';
 import {
+  TRANSCRIPTION_PROVIDER_SELECTIONS,
+  type TranscriptionProviderSelection,
+} from '../speech/contracts';
+import {
   DEFAULT_PROVIDER_PROFILES,
   cloneProviderProfiles,
   normalizeAssistantProvider,
@@ -41,6 +45,8 @@ export interface VoiceInputSettings {
   assistantSpeechEnabled: boolean;
   assistantSpeechVoiceUri: string;
   assistantSpeechRate: number;
+  transcriptionProvider: TranscriptionProviderSelection;
+  autoMode: boolean;
   historyTtlDays: HistoryTtlDays;
   sttModel: string;
   injectionMode: InjectionMode;
@@ -62,8 +68,10 @@ export const SETTINGS_DEFAULTS: Readonly<VoiceInputSettings> = Object.freeze({
   assistantSpeechEnabled: true,
   assistantSpeechVoiceUri: '',
   assistantSpeechRate: 1,
+  transcriptionProvider: 'none',
+  autoMode: false,
   historyTtlDays: 30,
-  sttModel: 'stt-async-v4',
+  sttModel: 'stt-async-v5',
   injectionMode: 'auto',
 });
 
@@ -98,10 +106,18 @@ export function normalizeSetting<K extends SettingName>(
       return normalizeProviderProfiles(value) as VoiceInputSettings[K];
     case 'assistantSpeechEnabled':
       return (typeof value === 'boolean' ? value : SETTINGS_DEFAULTS.assistantSpeechEnabled) as VoiceInputSettings[K];
+    case 'autoMode':
+      return (typeof value === 'boolean' ? value : SETTINGS_DEFAULTS.autoMode) as VoiceInputSettings[K];
     case 'assistantResumeOnStartup':
       return (typeof value === 'boolean' ? value : SETTINGS_DEFAULTS.assistantResumeOnStartup) as VoiceInputSettings[K];
     case 'assistantSpeechRate':
       return normalizeSpeechRate(value) as VoiceInputSettings[K];
+    case 'transcriptionProvider':
+      return normalizeEnum(
+        value,
+        TRANSCRIPTION_PROVIDER_SELECTIONS,
+        SETTINGS_DEFAULTS.transcriptionProvider,
+      ) as VoiceInputSettings[K];
     case 'historyTtlDays':
       return normalizeEnum(value, HISTORY_TTL_DAYS, SETTINGS_DEFAULTS.historyTtlDays) as VoiceInputSettings[K];
     case 'sttModel':

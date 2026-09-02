@@ -1,8 +1,8 @@
 {
   "name": "voice-input",
   "displayName": "Voice Input Assistant",
-  "description": "Soniox voice-to-text and a permission-gated personal assistant with configurable AI providers.",
-  "version": "2.0.0",
+  "description": "Accessible Control Center, compact voice sidebar, opt-in Soniox transcription, editable commands, and OS-dependent system speech.",
+  "version": "2.1.0",
   "publisher": "david-stern",
   "author": {
     "name": "David Stern"
@@ -34,7 +34,10 @@
   "main": "./out/extension.js",
   "icon": "media/logo.png",
   "activationEvents": [
-    "onStartupFinished"
+    "onStartupFinished",
+    "onWebviewPanel:voiceInput.controlCenter",
+    "onCommand:voiceInput.openControlCenter",
+    "onCommand:voiceInput.disableAutoMode"
   ],
   "contributes": {
     "viewsContainers": {
@@ -63,6 +66,15 @@
       ]
     },
     "commands": [
+      {
+        "command": "voiceInput.openControlCenter",
+        "title": "Voice Input: Open Control Center",
+        "icon": "$(window)"
+      },
+      {
+        "command": "voiceInput.disableAutoMode",
+        "title": "Voice Input: Disable Auto Mode"
+      },
       {
         "command": "voiceInput.toggleRecording",
         "title": "Voice Input: Toggle Recording",
@@ -270,20 +282,56 @@
           "description": "Non-secret provider endpoints, models, and enabled state. API keys and tokens are stored only in VS Code SecretStorage and must never be entered here.",
           "additionalProperties": false,
           "default": {
-            "deepseek": { "endpoint": "https://api.deepseek.com/chat/completions", "model": "deepseek-v4-flash", "enabled": true },
-            "anthropic": { "endpoint": "https://api.anthropic.com/v1/messages", "model": "claude-sonnet-4-6", "enabled": true },
-            "openai": { "endpoint": "https://api.openai.com/v1/responses", "model": "gpt-5.4", "enabled": true },
-            "gemini": { "endpoint": "https://generativelanguage.googleapis.com/v1beta", "model": "gemini-3.7-flash", "enabled": true },
-            "openrouter": { "endpoint": "https://openrouter.ai/api/v1/chat/completions", "model": "~openai/gpt-latest", "enabled": true },
-            "ollama": { "endpoint": "http://127.0.0.1:11434/api/chat", "model": "gpt-oss", "enabled": true },
-            "bedrock": { "endpoint": "https://bedrock-runtime.us-east-1.amazonaws.com", "model": "us.anthropic.claude-sonnet-4-6", "enabled": true },
-            "grok": { "endpoint": "https://api.x.ai/v1/chat/completions", "model": "grok-4.6", "enabled": true }
+            "deepseek": {
+              "endpoint": "https://api.deepseek.com/chat/completions",
+              "model": "deepseek-v4-flash",
+              "enabled": true
+            },
+            "anthropic": {
+              "endpoint": "https://api.anthropic.com/v1/messages",
+              "model": "claude-sonnet-4-6",
+              "enabled": true
+            },
+            "openai": {
+              "endpoint": "https://api.openai.com/v1/responses",
+              "model": "gpt-5.4",
+              "enabled": true
+            },
+            "gemini": {
+              "endpoint": "https://generativelanguage.googleapis.com/v1beta",
+              "model": "gemini-3.7-flash",
+              "enabled": true
+            },
+            "openrouter": {
+              "endpoint": "https://openrouter.ai/api/v1/chat/completions",
+              "model": "~openai/gpt-latest",
+              "enabled": true
+            },
+            "ollama": {
+              "endpoint": "http://127.0.0.1:11434/api/chat",
+              "model": "gpt-oss",
+              "enabled": true
+            },
+            "bedrock": {
+              "endpoint": "https://bedrock-runtime.us-east-1.amazonaws.com",
+              "model": "us.anthropic.claude-sonnet-4-6",
+              "enabled": true
+            },
+            "grok": {
+              "endpoint": "https://api.x.ai/v1/chat/completions",
+              "model": "grok-4.6",
+              "enabled": true
+            }
           },
           "patternProperties": {
             "^(deepseek|anthropic|openai|gemini|openrouter|ollama|bedrock|grok)$": {
               "type": "object",
               "additionalProperties": false,
-              "required": ["endpoint", "model", "enabled"],
+              "required": [
+                "endpoint",
+                "model",
+                "enabled"
+              ],
               "properties": {
                 "endpoint": {
                   "type": "string",
@@ -319,6 +367,28 @@
           "maximum": 2,
           "description": "Assistant speaking rate."
         },
+        "voiceInput.transcriptionProvider": {
+          "type": "string",
+          "scope": "application",
+          "default": "none",
+          "enum": [
+            "none",
+            "soniox",
+            "legacy-soniox-pending"
+          ],
+          "enumDescriptions": [
+            "No speech-to-text provider is selected.",
+            "Use Soniox only after a key and machine-local remote-processing consent are present.",
+            "An upgrade is awaiting local-only resolution of the previous Soniox credential."
+          ],
+          "description": "Speech-to-text provider selection. Selection alone never starts a network request."
+        },
+        "voiceInput.autoMode": {
+          "type": "boolean",
+          "scope": "application",
+          "default": false,
+          "description": "Display/request state only. Effective Auto Mode requires a machine-local receipt created by an explicit native confirmation."
+        },
         "voiceInput.historyTtlDays": {
           "type": "number",
           "default": 30,
@@ -332,7 +402,7 @@
         },
         "voiceInput.sttModel": {
           "type": "string",
-          "default": "stt-async-v4",
+          "default": "stt-async-v5",
           "description": "Soniox STT model identifier."
         },
         "voiceInput.injectionMode": {
@@ -367,6 +437,7 @@
     "@picovoice/pvrecorder-node": "1.2.9",
     "@types/node": "^20.0.0",
     "@types/vscode": "^1.99.0",
+    "@types/ws": "8.18.1",
     "@typescript-eslint/eslint-plugin": "^8.59.3",
     "@typescript-eslint/parser": "^8.59.3",
     "@vscode/vsce": "3.9.2",
@@ -375,5 +446,7 @@
     "tsx": "4.23.13",
     "typescript": "^5.4.0"
   },
-  "dependencies": {}
+  "dependencies": {
+    "ws": "8.21.3"
+  }
 }

@@ -46,7 +46,7 @@ const mapping: CustomMapping = {
 };
 
 test('manifest requires the Agent-tool compatible VS Code API and aligned typings', () => {
-  assert.equal(manifest.version, '2.0.0');
+  assert.equal(manifest.version, '2.1.0');
   assert.equal(manifest.engines.vscode, '^1.99.0');
   assert.equal(manifest.devDependencies['@types/vscode'], '^1.99.0');
   assert.equal(manifest.capabilities?.untrustedWorkspaces?.supported, 'limited');

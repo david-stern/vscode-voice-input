@@ -41,7 +41,7 @@ test('provider bodies, error_message, paths, keys, and raw failures never cross 
   await assertSanitizedFailure(input, 'invalid-response', malicious);
 });
 
-test('an aborted transcription still deletes known remote resources independently', async () => {
+test('an aborted transcription starts no cleanup requests with the invalidated credential', async () => {
   const originalFetch = globalThis.fetch;
   const mainController = new AbortController();
   const deletes: Array<{ url: string; signal: AbortSignal | null | undefined }> = [];
@@ -76,18 +76,54 @@ test('an aborted transcription still deletes known remote resources independentl
     );
 
     assert.equal(mainController.signal.aborted, true);
-    assert.deepEqual(
-      deletes.map(({ url }) => url),
-      [
-        'https://api.soniox.com/v1/transcriptions/transcription-known',
-        'https://api.soniox.com/v1/files/file-known',
-      ],
-    );
-    for (const deletion of deletes) {
-      assert.ok(deletion.signal);
-      assert.notEqual(deletion.signal, mainController.signal);
-      assert.equal(deletion.signal.aborted, false);
+    assert.deepEqual(deletes, []);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('authority loss during cleanup aborts that request and starts no later DELETE', async () => {
+  const originalFetch = globalThis.fetch;
+  const authority = new AbortController();
+  const deletes: Array<{ url: string; signal: AbortSignal | null | undefined }> = [];
+
+  globalThis.fetch = async (input, init) => {
+    const url = String(input);
+    if (init?.method === 'POST' && url.endsWith('/files')) {
+      return Response.json({ id: 'file-known' }, { status: 201 });
     }
+    if (init?.method === 'POST' && url.endsWith('/transcriptions')) {
+      return Response.json({ id: 'transcription-known' }, { status: 201 });
+    }
+    if (url.endsWith('/transcriptions/transcription-known/transcript')) {
+      return Response.json({ text: 'must-not-publish' });
+    }
+    if (init?.method === 'DELETE') {
+      deletes.push({ url, signal: init.signal });
+      authority.abort();
+      return new Response(null, { status: 204 });
+    }
+    if (url.endsWith('/transcriptions/transcription-known')) {
+      return Response.json({ status: 'completed' });
+    }
+    throw new Error(`Unexpected fetch: ${init?.method ?? 'GET'} ${url}`);
+  };
+
+  try {
+    await assert.rejects(
+      transcribe({
+        audio: new Uint8Array([1, 2, 3, 4]),
+        mime: 'audio/wav',
+        apiKey: 'test-key',
+        model: 'test-model',
+        pollIntervalMs: 0,
+        signal: authority.signal,
+      }),
+      (error: unknown) => error instanceof DOMException && error.name === 'AbortError',
+    );
+    assert.equal(deletes.length, 1);
+    assert.equal(deletes[0].url, 'https://api.soniox.com/v1/transcriptions/transcription-known');
+    assert.equal(deletes[0].signal?.aborted, true);
   } finally {
     globalThis.fetch = originalFetch;
   }

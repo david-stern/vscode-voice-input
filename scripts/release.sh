@@ -27,17 +27,25 @@ npm run release:verify
 
 echo "▶  Checking package contents…"
 PACKAGE_LIST="$(mktemp)"
-trap 'rm -f "$PACKAGE_LIST"' EXIT
-"$VSCE" ls > "$PACKAGE_LIST"
+CLAIM_TEXT_FILE="$(mktemp)"
+README_ARCHIVE_FILE="$(mktemp)"
+CHANGELOG_ARCHIVE_FILE="$(mktemp)"
+MANIFEST_ARCHIVE_FILE="$(mktemp)"
+trap 'rm -f "$PACKAGE_LIST" "$CLAIM_TEXT_FILE" "$README_ARCHIVE_FILE" "$CHANGELOG_ARCHIVE_FILE" "$MANIFEST_ARCHIVE_FILE"' EXIT
+"$VSCE" ls --no-dependencies > "$PACKAGE_LIST"
 
 REQUIRED_VSCE_LIST_FILES=(
   "package.json"
   "README.md"
   "LICENSE"
   "CHANGELOG.md"
+  "THIRD_PARTY_NOTICES.md"
   "out/extension.js"
   "out/webview/mic.client.js"
   "out/webview/settings.client.js"
+  "out/webview/settingsLauncher.css"
+  "out/webview/controlCenter/client.js"
+  "out/webview/controlCenter/styles.css"
   "out/vendor/pvrecorder-node/lib/linux/x86_64/pv_recorder.node"
   "out/vendor/pvrecorder-node/lib/mac/arm64/pv_recorder.node"
   "out/vendor/pvrecorder-node/lib/mac/x86_64/pv_recorder.node"
@@ -50,6 +58,7 @@ REQUIRED_VSCE_LIST_FILES=(
   "out/vendor/pvrecorder-node/lib/windows/amd64/pv_recorder.node"
   "out/vendor/pvrecorder-node/lib/windows/arm64/pv_recorder.node"
   "out/licenses/PICOVOICE-LICENSE.txt"
+  "out/licenses/WS-LICENSE.txt"
 )
 
 REQUIRED_ARCHIVE_FILES=(
@@ -57,9 +66,13 @@ REQUIRED_ARCHIVE_FILES=(
   "extension/readme.md"
   "extension/LICENSE.txt"
   "extension/changelog.md"
+  "extension/THIRD_PARTY_NOTICES.md"
   "extension/out/extension.js"
   "extension/out/webview/mic.client.js"
   "extension/out/webview/settings.client.js"
+  "extension/out/webview/settingsLauncher.css"
+  "extension/out/webview/controlCenter/client.js"
+  "extension/out/webview/controlCenter/styles.css"
   "extension/out/vendor/pvrecorder-node/lib/linux/x86_64/pv_recorder.node"
   "extension/out/vendor/pvrecorder-node/lib/mac/arm64/pv_recorder.node"
   "extension/out/vendor/pvrecorder-node/lib/mac/x86_64/pv_recorder.node"
@@ -72,6 +85,7 @@ REQUIRED_ARCHIVE_FILES=(
   "extension/out/vendor/pvrecorder-node/lib/windows/amd64/pv_recorder.node"
   "extension/out/vendor/pvrecorder-node/lib/windows/arm64/pv_recorder.node"
   "extension/out/licenses/PICOVOICE-LICENSE.txt"
+  "extension/out/licenses/WS-LICENSE.txt"
 )
 
 for required in "${REQUIRED_VSCE_LIST_FILES[@]}"; do
@@ -92,6 +106,41 @@ for required in "${REQUIRED_ARCHIVE_FILES[@]}"; do
   fi
 done
 
+echo "▶  Validating source-to-archive documentation and manifest parity…"
+unzip -p "$VSIX" extension/readme.md > "$README_ARCHIVE_FILE"
+unzip -p "$VSIX" extension/changelog.md > "$CHANGELOG_ARCHIVE_FILE"
+unzip -p "$VSIX" extension/package.json > "$MANIFEST_ARCHIVE_FILE"
+node - "$README_ARCHIVE_FILE" "$CHANGELOG_ARCHIVE_FILE" "$MANIFEST_ARCHIVE_FILE" <<'NODE'
+const fs = require('node:fs');
+
+const [readmePath, changelogPath, manifestPath] = process.argv.slice(2);
+const sourceReadme = fs.readFileSync('README.md', 'utf8');
+const archiveReadme = fs.readFileSync(readmePath, 'utf8');
+const normalizedReadme = archiveReadme
+  .replaceAll(
+    'https://github.com/david-stern/vscode-voice-input/blob/HEAD/CHANGELOG.md',
+    'CHANGELOG.md',
+  )
+  .replaceAll(
+    'https://github.com/david-stern/vscode-voice-input/blob/HEAD/LICENSE',
+    'LICENSE',
+  );
+if (normalizedReadme !== sourceReadme) {
+  console.error('✗  Packaged README differs from README.md beyond the pinned vsce link rewrite.');
+  process.exit(1);
+}
+
+for (const [label, sourcePath, archivePath] of [
+  ['CHANGELOG.md', 'CHANGELOG.md', changelogPath],
+  ['package.json', 'package.json', manifestPath],
+]) {
+  if (!fs.readFileSync(sourcePath).equals(fs.readFileSync(archivePath))) {
+    console.error(`✗  Packaged ${label} differs from its source file.`);
+    process.exit(1);
+  }
+}
+NODE
+
 echo "▶  Validating packaged manifest…"
 MANIFEST="$(unzip -p "$VSIX" extension/package.json)"
 node -e '
@@ -105,6 +154,10 @@ const viewIds = views.map((view) => view.id);
 if (viewIds.length !== 2 || !viewIds.includes("voiceInput.micView") || !viewIds.includes("voiceInput.settingsView")) fail("manifest must contribute the Microphone and Settings views");
 const commands = manifest.contributes?.commands ?? [];
 if (!commands.some((command) => command.command === "voiceInput.openSettings")) fail("manifest must contribute voiceInput.openSettings");
+if (!commands.some((command) => command.command === "voiceInput.openControlCenter")) fail("manifest must contribute voiceInput.openControlCenter");
+if (!commands.some((command) => command.command === "voiceInput.disableAutoMode")) fail("manifest must contribute the Auto kill switch");
+const activation = manifest.activationEvents ?? [];
+if (!activation.includes("onWebviewPanel:voiceInput.controlCenter")) fail("manifest must restore the Control Center serializer");
 const tools = manifest.contributes?.languageModelTools ?? [];
 const toolNames = tools.map((tool) => tool.name).sort();
 if (toolNames.length !== 2 || toolNames[0] !== "voice-input_listMappings" || toolNames[1] !== "voice-input_runMapping") fail("manifest must contribute both Voice Input Agent tools");
@@ -116,8 +169,33 @@ if grep -Eiq '(^|/)(src|test|tests|\.omc|node_modules)/|\.map$|(^|/)\.env($|\.)|
   exit 1
 fi
 
+echo "▶  Rejecting unapproved local-speech payloads and claims…"
+if grep -Eiq '(^|/)(tools/speech-eval|docs/speech-[^/]*\.md)(/|$)|(^|/)out/(models?|weights?|downloaders?|speech/local|local-speech)(/|$)|(^|/)(helper|supervisor)[-_]probe\.(mjs|js|exe)$|\.(onnx|gguf|safetensors|tflite)$' <<<"$ARCHIVE_LIST"; then
+  echo "✗  VSIX contains an unapproved local speech runtime, model, weight, or downloader." >&2
+  exit 1
+fi
+while IFS= read -r packaged_file; do
+  case "$packaged_file" in
+    *.png|*.node)
+      # The package has exactly these known binary families; scan every other member.
+      ;;
+    *)
+      archive_member="$packaged_file"
+      if [[ "$packaged_file" == '[Content_Types].xml' ]]; then
+        archive_member='\[Content_Types\].xml'
+      fi
+      unzip -p "$VSIX" "$archive_member" >> "$CLAIM_TEXT_FILE"
+      printf '\n' >> "$CLAIM_TEXT_FILE"
+      ;;
+  esac
+done <<<"$ARCHIVE_LIST"
+if ! node scripts/check-forbidden-claims.mjs "$CLAIM_TEXT_FILE"; then
+  echo "✗  VSIX makes an unapproved keyless, offline, or local-speech availability claim." >&2
+  exit 1
+fi
+
 echo "▶  Verifying packaged browser bundles…"
-for bundle in mic.client.js settings.client.js; do
+for bundle in mic.client.js settings.client.js controlCenter/client.js; do
   local_hash="$(sha256sum "out/webview/$bundle" | awk '{print $1}')"
   archive_hash="$(unzip -p "$VSIX" "extension/out/webview/$bundle" | sha256sum | awk '{print $1}')"
   if [[ "$local_hash" != "$archive_hash" ]]; then

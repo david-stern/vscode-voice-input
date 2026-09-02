@@ -10,6 +10,12 @@ import {
   type SettingsWebviewMessage,
 } from './protocol';
 import { renderSettingsDocument } from './document';
+import { parseLegacySettingsLauncherMessage } from './launcher';
+import { routeForLegacySection } from './state';
+
+export interface LegacySettingsControlCenterLauncher {
+  open(route: 'home' | 'voice' | 'commands' | 'assistant' | 'privacy' | 'diagnostics'): PromiseLike<void> | void;
+}
 
 export type SettingsPostResult = 'posted' | 'cached' | 'stale';
 
@@ -25,7 +31,12 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
   private pendingNavigation: SettingsHostMessage & { type: 'settings-navigate' } | undefined;
   private revealRequested = false;
 
-  constructor(private readonly extensionUri: vscode.Uri) {}
+  constructor(
+    private readonly extensionUri: vscode.Uri,
+    private readonly controlCenter: LegacySettingsControlCenterLauncher = {
+      open: (route) => vscode.commands.executeCommand('voiceInput.openControlCenter', route),
+    },
+  ) {}
 
   resolveWebviewView(view: vscode.WebviewView): void {
     this.view = view;
@@ -36,6 +47,11 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
     };
     view.webview.html = renderSettingsDocument(view.webview, this.extensionUri);
     view.webview.onDidReceiveMessage((raw: unknown) => {
+      const launcherMessage = parseLegacySettingsLauncherMessage(raw);
+      if (launcherMessage) {
+        void this.controlCenter.open(launcherMessage.route);
+        return;
+      }
       const message = parseSettingsWebviewMessage(raw);
       if (!message) return;
       if (message.type === 'settings-ready') {
@@ -81,24 +97,14 @@ export class SettingsViewProvider implements vscode.WebviewViewProvider {
     this.replayNavigation();
   }
 
-  async reveal(
-    section: SettingsSectionId = 'general',
-    revealContainer: () => PromiseLike<unknown> = () => vscode.commands.executeCommand(
-      'workbench.view.extension.voiceInput',
-    ),
-  ): Promise<void> {
-    this.navigate(section);
-    if (this.view) {
-      this.view.show(false);
-      return;
-    }
-    this.revealRequested = true;
-    await revealContainer();
-    const resolvedView = this.view as vscode.WebviewView | undefined;
-    if (resolvedView && this.revealRequested) {
-      this.revealRequested = false;
-      resolvedView.show(false);
-    }
+  async reveal(section: SettingsSectionId = 'general'): Promise<void> {
+    const route = routeForLegacySection(section);
+    const controlCenterRoute: 'home' | 'voice' | 'commands' | 'assistant' | 'privacy' | 'diagnostics' = {
+      setup: 'home', home: 'home', conversation: 'voice', voice: 'voice',
+      actions: 'commands', agents: 'assistant', providers: 'assistant',
+      privacy: 'privacy', diagnostics: 'diagnostics',
+    }[route] as 'home' | 'voice' | 'commands' | 'assistant' | 'privacy' | 'diagnostics';
+    await this.controlCenter.open(controlCenterRoute);
   }
 
   private replayState(): void {

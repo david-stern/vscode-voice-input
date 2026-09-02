@@ -16,6 +16,20 @@ async function build() {
     path.join(__dirname, 'src', 'recorder', 'PICOVOICE-LICENSE.txt'),
     path.join(licenseDir, 'PICOVOICE-LICENSE.txt'),
   );
+  fs.copyFileSync(
+    path.join(__dirname, 'node_modules', 'ws', 'LICENSE'),
+    path.join(licenseDir, 'WS-LICENSE.txt'),
+  );
+  const webviewAssetDir = path.join(outDir, 'webview');
+  fs.mkdirSync(path.join(webviewAssetDir, 'controlCenter'), { recursive: true });
+  fs.copyFileSync(
+    path.join(__dirname, 'src', 'webview', 'controlCenter', 'styles.css'),
+    path.join(webviewAssetDir, 'controlCenter', 'styles.css'),
+  );
+  fs.copyFileSync(
+    path.join(__dirname, 'src', 'webview', 'settings', 'launcher.css'),
+    path.join(webviewAssetDir, 'settingsLauncher.css'),
+  );
 
   // Stage only the recorder runtime. Keeping the npm package as a development
   // dependency avoids shipping its TypeScript sources, tests, maps, and build
@@ -40,6 +54,10 @@ async function build() {
     // Keep the native recorder package intact so its platform-specific
     // `.node` binaries are resolved relative to the package at runtime.
     external: ['vscode', './vendor/pvrecorder-node'],
+    define: {
+      'process.env.WS_NO_BUFFER_UTIL': '"1"',
+      'process.env.WS_NO_UTF_8_VALIDATE': '"1"',
+    },
     sourcemap: true,
     logLevel: 'info',
   });
@@ -48,6 +66,7 @@ async function build() {
     entryPoints: {
       'mic.client': 'src/webview/mic.client.ts',
       'settings.client': 'src/webview/settings.client.ts',
+      'controlCenter/client': 'src/webview/controlCenter/client.ts',
     },
     bundle: true,
     outdir: 'out/webview',

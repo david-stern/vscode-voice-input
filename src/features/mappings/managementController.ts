@@ -27,6 +27,17 @@ export interface SettingsMappingCard {
   agentEnabled: boolean;
 }
 
+/** Browser-visible mapping fields. Static args/input remain host-owned and are never accepted here. */
+export interface VisibleMappingDraft {
+  label: string;
+  description: string;
+  phrases: string[];
+  kind: 'command' | 'language-model-tool';
+  targetId: string;
+  enabled: boolean;
+  agentEnabled: boolean;
+}
+
 export interface MappingCollectionSnapshot {
   revision: Revision;
   status: 'ready' | 'untrusted' | 'error';
@@ -177,6 +188,43 @@ export class MappingManagementController {
       const currentCatalog = await this.wizard.discoverTargets();
       if (!this.isStillAuthorized(context)) return this.result('stale');
       const saved = await this.options.store.replace(id, draft, currentCatalog);
+      return this.accept(this.text(
+        `Voice Input: “${saved.label}” was saved with a new secure mapping ID.`,
+        `Voice Input: המיפוי „${saved.label}” נשמר עם מזהה מאובטח חדש.`,
+      ));
+    });
+  }
+
+  addVisible(
+    visible: VisibleMappingDraft,
+    expectedRevision: Revision,
+  ): Promise<MappingMutationResult> {
+    return this.serialize(expectedRevision, async (context) => {
+      const catalog = await this.wizard.discoverTargets();
+      if (!this.isStillAuthorized(context)) return this.result('stale');
+      const saved = await this.options.store.create(visibleDraft(visible), catalog);
+      return this.accept(this.text(
+        `Voice Input: “${saved.label}” was saved with a new secure mapping ID.`,
+        `Voice Input: המיפוי „${saved.label}” נשמר עם מזהה מאובטח חדש.`,
+      ));
+    });
+  }
+
+  editVisible(
+    id: string,
+    visible: VisibleMappingDraft,
+    expectedRevision: Revision,
+  ): Promise<MappingMutationResult> {
+    return this.serialize(expectedRevision, async (context) => {
+      const existing = this.options.store.get(id);
+      if (!existing) return this.result('not-found');
+      const catalog = await this.wizard.discoverTargets();
+      if (!this.isStillAuthorized(context)) return this.result('stale');
+      const saved = await this.options.store.replace(
+        id,
+        visibleDraft(visible, existing),
+        catalog,
+      );
       return this.accept(this.text(
         `Voice Input: “${saved.label}” was saved with a new secure mapping ID.`,
         `Voice Input: המיפוי „${saved.label}” נשמר עם מזהה מאובטח חדש.`,
@@ -409,4 +457,27 @@ export class MappingManagementController {
   private text(english: string, hebrew: string): string {
     return this.options.localize(english, hebrew);
   }
+}
+
+function visibleDraft(
+  visible: VisibleMappingDraft,
+  existing?: CustomMapping,
+): import('../../assistant').CustomMappingDraft {
+  const common = {
+    label: visible.label,
+    description: visible.description,
+    phrases: [...visible.phrases],
+    enabled: visible.enabled,
+    agentEnabled: visible.agentEnabled,
+  };
+  if (visible.kind === 'command') {
+    const args = existing?.kind === 'command' && existing.commandId === visible.targetId
+      ? existing.args
+      : [];
+    return { ...common, kind: 'command', commandId: visible.targetId, args };
+  }
+  const input = existing?.kind === 'language-model-tool' && existing.toolName === visible.targetId
+    ? existing.input
+    : {};
+  return { ...common, kind: 'language-model-tool', toolName: visible.targetId, input };
 }

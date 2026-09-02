@@ -10,6 +10,20 @@ import {
   type SettingsRepository,
 } from '../config';
 import { getProviderDescriptor, type ProviderId as PlannerProviderId } from '../inference';
+import type {
+  SonioxConnectionAuthority,
+  SonioxConnectionAuthorityPort,
+} from '../speech/providerRegistry';
+import {
+  SONIOX_REALTIME_ENDPOINT,
+  type SonioxTransportCloseEvent,
+  type SonioxTransportErrorEvent,
+  type SonioxTransportMessageEvent,
+  type SonioxTransportOpenEvent,
+  type SonioxWebSocketTransport,
+  type SonioxWebSocketTransportFactory,
+} from '../speech/soniox/transport';
+import WebSocket from 'ws';
 
 export const CONNECTION_TEST_CATEGORIES = [
   'connected',
@@ -57,6 +71,7 @@ export interface ConnectionTestServiceOptions {
   consent: ObservableConsent;
   probes: Partial<Readonly<Record<ProviderId, ConnectionProbe>>>;
   settings?: ObservableSettings;
+  sonioxAuthority?: SonioxConnectionAuthorityPort;
 }
 
 /** Runs explicit, transcript-free tests and never exposes a credential to callers. */
@@ -77,6 +92,10 @@ export class ConnectionTestService {
       () => this.cancel(),
     );
     if (settingsSubscription) this.subscriptions.push(settingsSubscription);
+    const sonioxAuthoritySubscription = options.sonioxAuthority?.onDidInvalidate?.(
+      () => this.cancel('soniox'),
+    );
+    if (sonioxAuthoritySubscription) this.subscriptions.push(sonioxAuthoritySubscription);
   }
 
   async test(provider: ProviderId, callerSignal?: AbortSignal): Promise<ConnectionTestResult> {
@@ -88,6 +107,7 @@ export class ConnectionTestService {
     if (profile && this.consentRequired(provider, profile) && !this.consentGranted(provider)) {
       return result(provider, 'consent-required');
     }
+    let sonioxAuthority: SonioxConnectionAuthority | undefined;
 
     const controller = new AbortController();
     const abortFromCaller = () => controller.abort();
@@ -106,16 +126,22 @@ export class ConnectionTestService {
           if (providerRequiresCredentialForProfile(provider, profile) && !credential) {
             return 'not-configured' as const;
           }
-          if (!this.authorityStillCurrent(provider, profileSignature)) {
+          if (provider === 'soniox') {
+            sonioxAuthority = await this.captureSonioxAuthority();
+            if (!sonioxAuthority) return 'consent-required' as const;
+          }
+          if (!await this.authorityStillCurrent(provider, profileSignature, sonioxAuthority)) {
             return 'cancelled' as const;
           }
-          return probe.probe(credential, controller.signal, profile);
+          const category = await probe.probe(credential, controller.signal, profile);
+          if (controller.signal.aborted) return 'cancelled' as const;
+          return await this.authorityStillCurrent(provider, profileSignature, sonioxAuthority)
+            ? category
+            : 'cancelled' as const;
         },
       );
       if (category === undefined) return result(provider, 'not-configured');
-      if (controller.signal.aborted && category === 'connected') {
-        return result(provider, 'cancelled');
-      }
+      if (controller.signal.aborted) return result(provider, 'cancelled');
       return result(provider, category);
     } catch {
       return result(provider, controller.signal.aborted ? 'cancelled' : 'unavailable');
@@ -156,14 +182,28 @@ export class ConnectionTestService {
     return provider !== 'soniox' && this.options.consent.status(provider).acknowledged;
   }
 
-  private authorityStillCurrent(
+  private async authorityStillCurrent(
     provider: ProviderId,
     expectedProfile: string | undefined,
-  ): boolean {
+    sonioxAuthority?: SonioxConnectionAuthority,
+  ): Promise<boolean> {
     if (this.options.settings?.providerChangePending) return false;
-    if (provider === 'soniox') return true;
+    if (provider === 'soniox') {
+      return Boolean(
+        sonioxAuthority
+        && await this.options.sonioxAuthority?.revalidate(sonioxAuthority),
+      );
+    }
     const profile = this.profile(provider);
     return profile.enabled && signature(profile) === expectedProfile;
+  }
+
+  private async captureSonioxAuthority(): Promise<SonioxConnectionAuthority | undefined> {
+    try {
+      return await this.options.sonioxAuthority?.capture();
+    } catch {
+      return undefined;
+    }
   }
 
   private cancelForConsent(event: ConsentInvalidation): void {
@@ -228,4 +268,78 @@ function signature(profile: Readonly<ProviderProfile>): string {
 
 function result(provider: ProviderId, category: ConnectionTestCategory): ConnectionTestResult {
   return Object.freeze({ provider, category });
+}
+
+/** Small audited Node transport: no redirects, compression, native addon, or browser exposure. */
+export function createSonioxWebSocketTransportFactory(): SonioxWebSocketTransportFactory {
+  return (endpoint) => {
+    if (endpoint !== SONIOX_REALTIME_ENDPOINT) throw new TypeError('Soniox endpoint is not allowlisted');
+    return new NodeSonioxWebSocketTransport(new WebSocket(endpoint, {
+      followRedirects: false,
+      perMessageDeflate: false,
+      maxPayload: 64 * 1_024,
+    }));
+  };
+}
+
+type SonioxEventMap = {
+  open: SonioxTransportOpenEvent;
+  message: SonioxTransportMessageEvent;
+  error: SonioxTransportErrorEvent;
+  close: SonioxTransportCloseEvent;
+};
+
+class NodeSonioxWebSocketTransport implements SonioxWebSocketTransport {
+  private readonly adapters = new Map<string, Map<object, (event: unknown) => void>>();
+
+  constructor(private readonly socket: WebSocket) {}
+
+  get readyState(): number { return this.socket.readyState; }
+
+  send(data: string | ArrayBuffer | ArrayBufferView): void {
+    this.socket.send(data);
+  }
+
+  close(code?: number, reason?: string): void {
+    this.socket.close(code, reason);
+  }
+
+  addEventListener<K extends keyof SonioxEventMap>(
+    type: K,
+    listener: (event: SonioxEventMap[K]) => void,
+  ): void {
+    const byListener = this.adapters.get(type) ?? new Map<object, (event: unknown) => void>();
+    if (byListener.has(listener)) return;
+    const adapter = (event: unknown) => listener(projectWsEvent(type, event) as SonioxEventMap[K]);
+    byListener.set(listener, adapter);
+    this.adapters.set(type, byListener);
+    this.socket.addEventListener(type, adapter as never);
+  }
+
+  removeEventListener<K extends keyof SonioxEventMap>(
+    type: K,
+    listener: (event: SonioxEventMap[K]) => void,
+  ): void {
+    const byListener = this.adapters.get(type);
+    const adapter = byListener?.get(listener);
+    if (!adapter) return;
+    this.socket.removeEventListener(type, adapter as never);
+    byListener?.delete(listener);
+    if (byListener?.size === 0) this.adapters.delete(type);
+  }
+}
+
+function projectWsEvent<K extends keyof SonioxEventMap>(type: K, event: unknown): SonioxEventMap[K] {
+  switch (type) {
+    case 'open': return { type: 'open' } as SonioxEventMap[K];
+    case 'error': return { type: 'error' } as SonioxEventMap[K];
+    case 'message': return {
+      type: 'message',
+      data: (event as WebSocket.MessageEvent).data,
+    } as SonioxEventMap[K];
+    case 'close': {
+      const close = event as WebSocket.CloseEvent;
+      return { type: 'close', code: close.code, wasClean: close.wasClean } as SonioxEventMap[K];
+    }
+  }
 }

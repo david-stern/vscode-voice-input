@@ -5,14 +5,7 @@ import type { AgentRegistry, AgentRegistryDisposable } from './registry';
 import type { MappingApprovalStore } from './mappingApprovals';
 
 export const AGENT_ACTION_KINDS = Object.freeze([
-  'answer',
-  'draft',
-  'send',
-  'command',
-  'tool',
-  'terminal',
-  'file-change',
-  'external-state',
+  'answer', 'draft', 'send', 'command', 'tool', 'terminal', 'file-change', 'external-state',
 ] as const);
 export type AgentActionKind = (typeof AGENT_ACTION_KINDS)[number];
 export type AgentPermissionTier = 'automatic' | 'confirmation-required';
@@ -37,12 +30,17 @@ export interface AgentAuthorityContext {
   resolveMapping(mappingId: string): CustomMapping | undefined;
 }
 
+export interface AgentAutoModeSnapshot { effective: boolean; epoch: number; fingerprint: string }
+export interface AgentAutoModePort {
+  snapshot(): AgentAutoModeSnapshot; onWillChange(listener: () => void): AgentRegistryDisposable;
+}
+
 export type AgentAuthorityDecision =
   | {
       status: 'authorized';
       authorizationId: string;
       permissionTier: AgentPermissionTier;
-      mode: 'automatic' | 'always-approved' | 'confirmed';
+      mode: 'automatic' | 'always-approved' | 'auto-mode' | 'confirmed';
       expiresAt: number;
     }
   | {
@@ -59,18 +57,10 @@ export type AgentAuthorityDecision =
     };
 
 export type AgentAuthorityFailure =
-  | 'invalid-proposal'
-  | 'agent-changed'
-  | 'workspace-untrusted'
-  | 'mapping-unavailable'
-  | 'no-pending-approval'
-  | 'approval-expired'
-  | 'approval-replayed'
-  | 'confirmation-not-later'
-  | 'target-changed'
-  | 'authorization-invalid'
-  | 'busy'
-  | 'outcome-unknown-do-not-retry';
+  | 'invalid-proposal' | 'agent-changed' | 'workspace-untrusted' | 'mapping-unavailable'
+  | 'no-pending-approval' | 'approval-expired' | 'approval-replayed'
+  | 'confirmation-not-later' | 'target-changed' | 'authority-changed'
+  | 'authorization-invalid' | 'busy' | 'outcome-unknown-do-not-retry';
 
 export interface AgentApprovalHistoryEntry {
   id: string;
@@ -84,35 +74,26 @@ export interface AgentApprovalHistoryEntry {
   targetEvidence: string;
   mappingId?: string;
   permissionTier: AgentPermissionTier;
-  decision: 'automatic' | 'always-approved' | 'requested' | 'confirmed' | 'denied' | 'executed';
+  decision: 'automatic' | 'always-approved' | 'auto-mode' | 'requested' | 'confirmed' | 'denied' | 'executed';
   timestamp: number;
   expiresAt?: number;
 }
 
 interface PendingApproval {
-  id: string;
-  proposal: AgentActionProposal;
-  targetFingerprint: string;
-  mappingFingerprint?: string;
-  requestedAt: number;
-  expiresAt: number;
+  id: string; proposal: AgentActionProposal; targetFingerprint: string;
+  mappingFingerprint?: string; requestedAt: number; expiresAt: number;
 }
 
 interface Authorization {
-  id: string;
-  proposal: AgentActionProposal;
-  targetFingerprint: string;
-  mappingFingerprint?: string;
-  mode: 'automatic' | 'always-approved' | 'confirmed';
-  expiresAt: number;
+  id: string; proposal: AgentActionProposal; targetFingerprint: string;
+  mappingFingerprint?: string; mode: 'automatic' | 'always-approved' | 'auto-mode' | 'confirmed';
+  expiresAt: number; autoModeEpoch?: number; autoModeFingerprint?: string;
 }
 
 export interface AgentAuthorityOptions {
   approvals: Pick<MappingApprovalStore, 'isApproved' | 'onWillChange'>;
-  agents?: Pick<AgentRegistry, 'onWillChange'>;
-  ttlMs?: number;
-  now?: () => number;
-  idFactory?: () => string;
+  agents?: Pick<AgentRegistry, 'onWillChange'>; autoMode?: AgentAutoModePort;
+  ttlMs?: number; now?: () => number; idFactory?: () => string;
 }
 
 export type AgentExecutionResult<T> =
@@ -138,6 +119,8 @@ export class AgentAuthorityPolicy {
     this.subscriptions.push(options.approvals.onWillChange(() => this.revoke()));
     const agentSubscription = options.agents?.onWillChange(() => this.revoke());
     if (agentSubscription) this.subscriptions.push(agentSubscription);
+    const autoModeSubscription = options.autoMode?.onWillChange(() => this.revoke());
+    if (autoModeSubscription) this.subscriptions.push(autoModeSubscription);
   }
 
   request(raw: unknown, context: AgentAuthorityContext): AgentAuthorityDecision {
@@ -153,12 +136,29 @@ export class AgentAuthorityPolicy {
     const mapping = proposal.mappingId
       ? safeResolve(context.resolveMapping, proposal.mappingId)
       : undefined;
-    if (proposal.mappingId && !mapping) {
+    if (proposal.mappingId && (!mapping || !mapping.enabled || !mapping.agentEnabled)) {
       return this.denied(tier, 'mapping-unavailable', proposal);
     }
     const mappingHash = mapping ? mappingFingerprint(mapping) : undefined;
     if (tier === 'automatic') {
       return this.authorize(proposal, context.targetFingerprint, mappingHash, 'automatic');
+    }
+    const autoMode = safeAutoModeSnapshot(this.options.autoMode);
+    if (
+      autoMode?.effective
+      && mapping
+      && mapping.enabled
+      && mapping.agentEnabled
+      && (proposal.action === 'command' || proposal.action === 'tool')
+    ) {
+      return this.authorize(
+        proposal,
+        context.targetFingerprint,
+        mappingHash,
+        'auto-mode',
+        undefined,
+        autoMode,
+      );
     }
     if (
       (proposal.action === 'command' || proposal.action === 'tool')
@@ -244,8 +244,13 @@ export class AgentAuthorityPolicy {
       failure
       || authorization.targetFingerprint !== context.targetFingerprint
       || !authorizationStillMatches(authorization, context, this.options.approvals)
+      || !autoModeStillMatches(authorization, this.options.autoMode)
     ) {
-      return { ok: false, reason: failure ?? 'target-changed' };
+      return {
+        ok: false,
+        reason: failure
+          ?? (authorization.mode === 'auto-mode' ? 'authority-changed' : 'target-changed'),
+      };
     }
 
     this.running = true;
@@ -268,18 +273,12 @@ export class AgentAuthorityPolicy {
     }
   }
 
-  revoke(): void {
-    this.revokePending();
-    this.authorizations.clear();
-  }
+  revoke(): void { this.revokePending(); this.authorizations.clear(); }
 
-  history(): readonly AgentApprovalHistoryEntry[] {
-    return this.historyEntries.map((entry) => ({ ...entry }));
-  }
+  history(): readonly AgentApprovalHistoryEntry[] { return this.historyEntries.map((entry) => ({ ...entry })); }
 
   dispose(): void {
-    this.revoke();
-    for (const subscription of this.subscriptions.splice(0)) subscription.dispose();
+    this.revoke(); for (const subscription of this.subscriptions.splice(0)) subscription.dispose();
   }
 
   private authorize(
@@ -288,6 +287,7 @@ export class AgentAuthorityPolicy {
     mappingHash: string | undefined,
     mode: Authorization['mode'],
     expiresAt = this.now() + this.ttlMs,
+    autoMode?: AgentAutoModeSnapshot,
   ): Extract<AgentAuthorityDecision, { status: 'authorized' }> {
     const authorization: Authorization = {
       id: this.idFactory(),
@@ -296,6 +296,10 @@ export class AgentAuthorityPolicy {
       ...(mappingHash ? { mappingFingerprint: mappingHash } : {}),
       mode,
       expiresAt,
+      ...(autoMode ? {
+        autoModeEpoch: autoMode.epoch,
+        autoModeFingerprint: autoMode.fingerprint,
+      } : {}),
     };
     this.authorizations.set(authorization.id, authorization);
     this.remember(
@@ -349,9 +353,7 @@ export class AgentAuthorityPolicy {
     if (this.historyEntries.length > 100) this.historyEntries.shift();
   }
 
-  private revokePending(): void {
-    this.pending = undefined;
-  }
+  private revokePending(): void { this.pending = undefined; }
 
   private rememberConfirmation(id: string): void {
     this.usedConfirmationIds.add(id);
@@ -365,15 +367,8 @@ export class AgentAuthorityPolicy {
 function parseProposal(value: unknown): AgentActionProposal | undefined {
   if (!isPlainObject(value)) return undefined;
   const allowed = new Set([
-    'proposalId',
-    'agentId',
-    'provider',
-    'model',
-    'action',
-    'reason',
-    'confidence',
-    'targetEvidence',
-    'mappingId',
+    'proposalId', 'agentId', 'provider', 'model', 'action',
+    'reason', 'confidence', 'targetEvidence', 'mappingId',
   ]);
   const required = [...allowed].filter((key) => key !== 'mappingId');
   if (
@@ -395,14 +390,9 @@ function parseProposal(value: unknown): AgentActionProposal | undefined {
     || (value.mappingId !== undefined && !boundedText(value.mappingId, 128))
   ) return undefined;
   return Object.freeze({
-    proposalId: value.proposalId,
-    agentId: value.agentId,
-    provider: value.provider,
-    model: value.model,
-    action: value.action as AgentActionKind,
-    reason: value.reason,
-    confidence: value.confidence,
-    targetEvidence: value.targetEvidence,
+    proposalId: value.proposalId, agentId: value.agentId, provider: value.provider,
+    model: value.model, action: value.action as AgentActionKind, reason: value.reason,
+    confidence: value.confidence, targetEvidence: value.targetEvidence,
     ...(value.mappingId === undefined ? {} : { mappingId: value.mappingId }),
   });
 }
@@ -455,37 +445,55 @@ function authorizationStillMatches(
     || approvals.isApproved(authorization.proposal.mappingId);
 }
 
-function automaticAction(action: AgentActionKind): boolean {
-  return action === 'answer' || action === 'draft';
+function autoModeStillMatches(
+  authorization: Authorization,
+  port: AgentAutoModePort | undefined,
+): boolean {
+  if (authorization.mode !== 'auto-mode') return true;
+  const current = safeAutoModeSnapshot(port);
+  return Boolean(
+    current?.effective
+    && current.epoch === authorization.autoModeEpoch
+    && current.fingerprint === authorization.autoModeFingerprint,
+  );
 }
 
-function safeResolve(
-  resolve: (mappingId: string) => CustomMapping | undefined,
-  mappingId: string,
-): CustomMapping | undefined {
+function safeAutoModeSnapshot(port: AgentAutoModePort | undefined): AgentAutoModeSnapshot | undefined {
   try {
-    return resolve(mappingId);
+    const value = port?.snapshot();
+    if (
+      !value
+      || typeof value.effective !== 'boolean'
+      || !Number.isSafeInteger(value.epoch)
+      || value.epoch < 0
+      || !boundedIdentifier(value.fingerprint, 256)
+    ) return undefined;
+    return value;
   } catch {
     return undefined;
   }
 }
 
+function automaticAction(action: AgentActionKind): boolean { return action === 'answer' || action === 'draft'; }
+
+function safeResolve(
+  resolve: (mappingId: string) => CustomMapping | undefined,
+  mappingId: string,
+): CustomMapping | undefined {
+  try { return resolve(mappingId); } catch { return undefined; }
+}
+
 function boundedText(value: unknown, maximum: number): value is string {
-  return typeof value === 'string'
-    && value.length > 0
-    && value.length <= maximum
+  return typeof value === 'string' && value.length > 0 && value.length <= maximum
     && !/[\u0000-\u001f\u007f-\u009f\u202a-\u202e\u2066-\u2069]/u.test(value);
 }
 
 function boundedIdentifier(value: unknown, maximum: number): value is string {
-  return typeof value === 'string'
-    && value.length > 0
-    && value.length <= maximum
+  return typeof value === 'string' && value.length > 0 && value.length <= maximum
     && /^[A-Za-z0-9~][A-Za-z0-9._~:/@+-]*$/u.test(value);
 }
 
 function isPlainObject(value: unknown): value is Record<string, unknown> {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
+  return [Object.prototype, null].includes(Object.getPrototypeOf(value));
 }

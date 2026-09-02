@@ -100,6 +100,10 @@ export class SettingsRepository {
     return this.providerMutationSequence;
   }
 
+  hasExplicitGlobal(name: SettingName): boolean {
+    return this.configuration.inspect<unknown>(name)?.globalValue !== undefined;
+  }
+
   onProviderAuthorityChanged(listener: () => void): DisposableListener {
     this.providerAuthorityListeners.add(listener);
     return { dispose: () => this.providerAuthorityListeners.delete(listener) };
@@ -284,7 +288,9 @@ function isProviderAuthoritySetting(name: SettingName): boolean {
   return name === 'assistantProvider'
     || name === 'providerProfiles'
     || name === 'assistantIntelligence'
-    || name === 'deepSeekModel';
+    || name === 'deepSeekModel'
+    || name === 'transcriptionProvider'
+    || name === 'autoMode';
 }
 
 function isProviderProfileSetting(

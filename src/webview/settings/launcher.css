@@ -1,0 +1,10 @@
+:root { color-scheme: light dark; }
+* { box-sizing: border-box; }
+html, body { min-width: 0; margin: 0; overflow-x: hidden; }
+body { color: var(--vscode-foreground); background: var(--vscode-sideBar-background); font: var(--vscode-font-size, 13px)/1.5 var(--vscode-font-family); }
+#settings-launcher-main { display: grid; gap: 12px; padding: 12px; }
+h1, p { margin: 0; overflow-wrap: anywhere; }
+button { min-width: 44px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--vscode-button-border, transparent); color: var(--vscode-button-foreground); background: var(--vscode-button-background); font: inherit; }
+button:hover { background: var(--vscode-button-hoverBackground); }
+button:focus-visible { outline: 2px solid var(--vscode-focusBorder, var(--vscode-contrastActiveBorder)); outline-offset: 2px; }
+@media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }

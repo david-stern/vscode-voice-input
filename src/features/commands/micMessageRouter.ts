@@ -29,18 +29,11 @@ export interface MicMessageRouterOptions {
     AssistantFeature,
     | 'start'
     | 'stop'
-    | 'state'
     | 'cancelSpeaking'
     | 'speechStarted'
     | 'speechFinished'
-    | 'confirmPendingSend'
-    | 'clearPendingSend'
-    | 'nextId'
   >;
-  mappings: Pick<
-    MappingFeature,
-    'manage' | 'confirmIfPending' | 'cancelIfPending'
-  >;
+  mappings: Pick<MappingFeature, 'manage'>;
   state: Pick<HostStatePublisher, 'pushFull' | 'pushHistory'>;
   ui: MicMessageUiPort;
   openSettingsCenter(): PromiseLike<void>;
@@ -137,25 +130,8 @@ export class MicMessageRouter {
       case 'assistant-speech-finished':
         this.options.assistant.speechFinished(message.id, message.outcome);
         return;
-      case 'assistant-pending-send-confirm':
-        await this.options.assistant.confirmPendingSend(message.id);
-        return;
-      case 'assistant-pending-send-cancel':
-        if (this.options.assistant.state.pendingSend?.id === message.id) {
-          this.options.assistant.clearPendingSend(true);
-        }
-        return;
       case 'assistant-mappings-manage':
         await this.options.mappings.manage();
-        return;
-      case 'assistant-pending-action-confirm':
-        await this.options.mappings.confirmIfPending(
-          message.id,
-          this.options.assistant.nextId('ui-action-confirm'),
-        );
-        return;
-      case 'assistant-pending-action-cancel':
-        this.options.mappings.cancelIfPending(message.id, true);
         return;
       case 'set-api-key':
         await this.options.ui.executeCommand('voiceInput.setApiKey');

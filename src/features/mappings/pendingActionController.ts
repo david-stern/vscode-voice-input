@@ -1,5 +1,6 @@
 import {
   MappingCapabilityPolicy,
+  mappingFingerprint,
   type CustomMapping,
   type CustomMappingExecutor,
   type MappingExecutionFailure,
@@ -23,6 +24,11 @@ export interface PendingActionControllerOptions {
   setTimer?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
   now?: () => number;
+  autoMode?: {
+    snapshot(): { effective: boolean; epoch: number; fingerprint: string };
+    onWillChange?(listener: () => void): { dispose(): void };
+  };
+  targetFingerprint?(snapshot: TargetSnapshot): string;
 }
 
 /**
@@ -37,12 +43,14 @@ export class PendingActionController {
   private pending: PendingAssistantAction | undefined;
   private timer: ReturnType<typeof setTimeout> | undefined;
   private executionEpoch = 0;
+  private readonly autoSubscription: { dispose(): void } | undefined;
 
   constructor(private readonly options: PendingActionControllerOptions) {
     this.capability = options.capability ?? new MappingCapabilityPolicy();
     this.setTimer = options.setTimer ?? setTimeout;
     this.clearTimer = options.clearTimer ?? clearTimeout;
     this.now = options.now ?? Date.now;
+    this.autoSubscription = options.autoMode?.onWillChange?.(() => this.cancel(false));
   }
 
   get state(): PendingAssistantAction | undefined {
@@ -54,6 +62,17 @@ export class PendingActionController {
     this.options.clearPendingSend();
     if (!this.options.isWorkspaceTrusted()) {
       this.options.speak(this.executionFeedback('workspace-untrusted'));
+      return;
+    }
+
+    const autoMode = this.autoModeSnapshot();
+    if (autoMode?.effective) {
+      if (!this.options.targetFingerprint) {
+        this.options.speak(this.executionFeedback('target-changed'));
+        return;
+      }
+      const executionEpoch = this.executionEpoch;
+      void this.executeAuto(mapping, snapshot, autoMode, executionEpoch);
       return;
     }
 
@@ -142,6 +161,7 @@ export class PendingActionController {
 
   dispose(): void {
     this.cancel(false);
+    this.autoSubscription?.dispose();
   }
 
   private clearPendingState(): void {
@@ -177,6 +197,14 @@ export class PendingActionController {
         'I did not run the action because its mapping changed after approval.',
         'לא הפעלתי את הפעולה מפני שהמיפוי השתנה לאחר האישור.',
       ],
+      'authority-changed': [
+        'I stopped because Auto Mode authority changed before dispatch.',
+        'עצרתי מפני שסמכות מצב Auto השתנתה לפני ההפעלה.',
+      ],
+      'target-changed': [
+        'I stopped because the target changed before dispatch.',
+        'עצרתי מפני שהיעד השתנה לפני ההפעלה.',
+      ],
       'target-unavailable': [
         'I did not run the action because its VS Code command or tool is no longer available.',
         'לא הפעלתי את הפעולה מפני שפקודת VS Code או הכלי כבר אינם זמינים.',
@@ -196,6 +224,62 @@ export class PendingActionController {
     };
     const [english, hebrew] = messages[reason];
     return this.options.localize(english, hebrew);
+  }
+
+  private autoModeSnapshot(): { effective: boolean; epoch: number; fingerprint: string } | undefined {
+    try {
+      const snapshot = this.options.autoMode?.snapshot();
+      if (
+        !snapshot
+        || typeof snapshot.effective !== 'boolean'
+        || !Number.isSafeInteger(snapshot.epoch)
+        || snapshot.epoch < 0
+        || !/^[A-Za-z0-9._:-]{1,256}$/u.test(snapshot.fingerprint)
+      ) return undefined;
+      return snapshot;
+    } catch {
+      return undefined;
+    }
+  }
+
+  private async executeAuto(
+    mapping: CustomMapping,
+    snapshot: TargetSnapshot,
+    autoMode: { effective: boolean; epoch: number; fingerprint: string },
+    executionEpoch: number,
+  ): Promise<void> {
+    const cancelled = () => executionEpoch !== this.executionEpoch;
+    let targetFingerprint: string;
+    try {
+      targetFingerprint = this.options.targetFingerprint?.(snapshot) ?? '';
+    } catch {
+      targetFingerprint = '';
+    }
+    if (!/^[A-Za-z0-9._:-]{1,256}$/u.test(targetFingerprint)) {
+      this.options.speak(this.executionFeedback('target-changed'));
+      return;
+    }
+    const result = await this.options.executor.execute(mapping.id, {
+      source: 'voice',
+      expectedFingerprint: mappingFingerprint(mapping),
+      expectedAuthority: {
+        epoch: autoMode.epoch,
+        fingerprint: autoMode.fingerprint,
+      },
+      expectedTargetFingerprint: targetFingerprint,
+      cancellationToken: {
+        get isCancellationRequested() { return cancelled(); },
+      },
+    });
+    if (executionEpoch !== this.executionEpoch) return;
+    if (!result.ok) {
+      this.options.speak(this.executionFeedback(result.reason));
+      return;
+    }
+    this.options.speak(this.options.localize(
+      `I ran “${mapping.label}” under the current Auto Mode authority.`,
+      `הפעלתי את „${mapping.label}” תחת סמכות מצב Auto הנוכחית.`,
+    ));
   }
 }
 

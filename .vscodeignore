@@ -5,6 +5,10 @@ node_modules/*
 .eslintrc.json
 eslint.config.mjs
 .omc/**
+tools/**
+docs/speech-*.md
+docs/control-center-ux-contract.md
+scripts/check-forbidden-claims.mjs
 esbuild.js
 tsconfig.json
 **/*.map

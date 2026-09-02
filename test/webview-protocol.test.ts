@@ -45,11 +45,7 @@ test('accepts every current webview message family at the host boundary', () => 
     { type: 'assistant-stop-speaking' },
     { type: 'assistant-speech-started', id: 'speech-1' },
     { type: 'assistant-speech-finished', id: 'speech-1', outcome: 'completed' },
-    { type: 'assistant-pending-send-confirm', id: 'send-1' },
-    { type: 'assistant-pending-send-cancel', id: 'send-1' },
     { type: 'assistant-mappings-manage' },
-    { type: 'assistant-pending-action-confirm', id: 'action-1' },
-    { type: 'assistant-pending-action-cancel', id: 'action-1' },
     { type: 'open-settings-center' },
     {
       type: 'settings-update',
@@ -82,6 +78,10 @@ test('rejects malformed, unknown, inherited, or over-posted webview messages', (
     { type: 'assistant-persona-change', persona: 'administrator' },
     { type: 'assistant-speech-settings-change', enabled: true, voiceUri: '', rate: Infinity },
     { type: 'assistant-speech-finished', id: 'speech-1', outcome: 'success' },
+    { type: 'assistant-pending-send-confirm', id: 'send-1' },
+    { type: 'assistant-pending-send-cancel', id: 'send-1' },
+    { type: 'assistant-pending-action-confirm', id: 'action-1' },
+    { type: 'assistant-pending-action-cancel', id: 'action-1' },
     { type: 'settings-update', speechLang: 'he', uiLang: 'ar', ttlDays: 30, model: 'x' },
     { type: 'settings-update', speechLang: 'he', uiLang: 'he', ttlDays: 2, model: 'x' },
   ];

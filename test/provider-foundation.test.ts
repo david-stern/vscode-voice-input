@@ -176,7 +176,7 @@ test('provider credentials expose only status and a clear synchronously defeats 
   await Promise.resolve();
   const clearing = credentials.clear('anthropic');
   assert.deepEqual(await credentials.use('anthropic', async () => 'must-not-run'), undefined);
-  assert.deepEqual(invalidations, ['anthropic:1']);
+  assert.deepEqual(invalidations, ['anthropic:1', 'anthropic:2']);
   stored.resolve();
   assert.deepEqual(await setting, { provider: 'anthropic', configured: false });
   await clearing;
