@@ -78,6 +78,32 @@ export function sonioxVoiceLabel(voiceId: string, language: unknown): string {
     : `Soniox ${voiceId} (remote)`;
 }
 
+/** The protocol bounds every voice index to this range on both sides of the channel. */
+export function isSystemVoiceIndex(value: unknown): value is number {
+  return typeof value === 'number'
+    && Number.isInteger(value)
+    && value >= -1
+    && value < MAX_SYSTEM_VOICE_CHOICES;
+}
+
+/**
+ * The whole host-owned channel in its indexed order: the speech-dispatcher fallback
+ * first, then the expanded Soniox roster. The host composes the same list, so a voice
+ * index means the same voice on both sides.
+ */
+export function hostChannelVoices(
+  setup: {
+    hostVoices?: readonly ControlCenterObservedSystemVoice[];
+    sonioxVoices?: readonly string[];
+  } | undefined,
+  language: unknown,
+): ControlCenterObservedSystemVoice[] {
+  return [
+    ...setup?.hostVoices ?? [],
+    ...sonioxSystemVoices(setup?.sonioxVoices ?? [], language),
+  ];
+}
+
 /**
  * Expands the bounded id list into voice records. Malformed and duplicate ids are dropped
  * on both sides identically, so the host and the browser always agree on the indices.
