@@ -1,12 +1,12 @@
 /**
  * Soniox speech output.
  *
- * Speaking sends the reply text to Soniox, so it is governed by exactly the same
- * machine/profile-local remote-processing receipt as Soniox transcription: `authority`
- * is the consent port, and a missing or stale receipt refuses the utterance *before*
- * any network call. The API key never leaves the `credentials.use` callback, the text
- * never reaches a command line (audio is piped to the player's stdin), and neither the
- * text nor the audio is ever written to disk or to the log.
+ * Speaking sends the reply text to Soniox, so it is a user-initiated remote operation
+ * governed by exactly the same machine/profile-local remote-processing receipt as Soniox
+ * transcription: `authority` is that consent port, and a missing or stale receipt refuses
+ * the utterance *before* any network call. The API key never leaves the `credentials.use`
+ * callback, the text never reaches a command line (audio is piped to the player's stdin),
+ * and neither the text nor the audio is ever written to disk or to the log.
  */
 import {
   isSonioxTtsVoice,
@@ -17,13 +17,10 @@ import {
   SONIOX_PLAYBACK_COMMANDS,
   SONIOX_TTS_AUDIO_FORMAT,
   SONIOX_TTS_ENDPOINT,
-  SONIOX_TTS_MODEL,
   SONIOX_TTS_MODELS_ENDPOINT,
   SONIOX_TTS_SAMPLE_RATE,
   boundedUtterance,
   discardBody,
-  fallbackVoices,
-  parseVoiceRoster,
   sonioxSpeechSpeed,
   synthesisFailure,
   type SonioxPlaybackProcess,
@@ -33,11 +30,23 @@ import {
   type SonioxTtsResponse,
   type SonioxTtsServiceOptions,
   type SonioxTtsSpeakOptions,
-  type SonioxTtsVoice,
 } from './sonioxTtsProtocol';
+import {
+  SONIOX_TTS_MODEL,
+  fallbackVoices,
+  parseVoiceRoster,
+  type SonioxTtsVoice,
+} from './sonioxTtsRoster';
 
 export { isSonioxTtsVoice, sonioxVoiceId, sonioxVoiceUri };
 export * from './sonioxTtsProtocol';
+export {
+  SONIOX_TTS_MODEL,
+  SONIOX_TTS_FALLBACK_VOICE_IDS,
+  fallbackVoices,
+  parseVoiceRoster,
+  type SonioxTtsVoice,
+} from './sonioxTtsRoster';
 
 const SYNTHESIS_TIMEOUT_MS = 15_000;
 const VOICE_LIST_TIMEOUT_MS = 5_000;

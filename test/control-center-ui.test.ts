@@ -159,7 +159,7 @@ test('the browser renders the merged voice list the host indexes and defers host
   const client = readFileSync('src/webview/controlCenter/client.ts', 'utf8');
   const setup = readFileSync('src/webview/controlCenter/routes/setup.ts', 'utf8');
   assert.match(client, /mergeSystemVoices\(local\.voices, hostVoices\)/u);
-  assert.match(client, /sonioxSystemVoices\(resources\.setup\?\.sonioxVoices \?\? \[\]/u);
+  assert.match(client, /hostChannelVoices\(resources\.setup, snapshot\?\.state\.language\)/u);
   assert.match(client, /isHostChannelVoice\(selected\.voiceUri\)/u);
   assert.match(client, /operation: 'preview'/u);
   // A host preview is audible outside this browser, so its Stop control must stay usable.

@@ -300,6 +300,48 @@ test('the lenient window is bounded to the last eight delivered revisions', asyn
   controller.dispose();
 });
 
+test('a snapshot the webview never received never enters the lenient window', async () => {
+  const factory = new FakeFactory();
+  const rejected: string[] = [];
+  const controller = new ControlCenterController({
+    factory,
+    persistence: new MemoryPersistence(),
+    source: { ...source, logRejected: (event, reason) => { rejected.push(`${event}/${reason}`); } },
+  });
+  await controller.createOrShow('commands');
+  const panel = factory.created[0];
+  panel.emit({ type: 'ready', lastAppliedRevision: null });
+  await controller.whenIdle();
+  const delivered = panel.messages[0] as Extract<ControlCenterHostMessage, { type: 'stateSnapshot' }>;
+  // The webview drops one snapshot mid-refresh: postMessage resolves false, nothing renders.
+  const post = panel.postMessage.bind(panel);
+  let failSnapshots = 1;
+  panel.postMessage = (message) => {
+    if (message.type === 'stateSnapshot' && failSnapshots > 0) { failSnapshots -= 1; return false; }
+    return post(message);
+  };
+  await controller.refresh();
+  await controller.refresh();
+  const latest = panel.messages.filter((message) => message.type === 'stateSnapshot').at(-1);
+  assert.ok(latest && latest.type === 'stateSnapshot');
+  const undeliveredRevision = latest.revision - 1;
+  assert.equal(undeliveredRevision, delivered.revision + 1);
+  // A click can only echo a revision the webview actually rendered; the dropped one stays out.
+  panel.emit({ type: 'setPageIntent', revision: undeliveredRevision, page: 2 });
+  await controller.whenIdle();
+  assert.equal(controller.currentDisplayState.page, undefined);
+  assert.deepEqual(rejected, ['browser-message/stale-revision']);
+  // Revisions delivered before and after the failure remain acceptable.
+  panel.emit({ type: 'setPageIntent', revision: delivered.revision, page: 2 });
+  await controller.whenIdle();
+  assert.equal(controller.currentDisplayState.page, 2);
+  panel.emit({ type: 'setPageIntent', revision: latest.revision, page: 3 });
+  await controller.whenIdle();
+  assert.equal(controller.currentDisplayState.page, 3);
+  assert.deepEqual(rejected, ['browser-message/stale-revision']);
+  controller.dispose();
+});
+
 test('a privileged intent that loses the revision race is rejected as strictly stale', async () => {
   const factory = new FakeFactory();
   const rejected: string[] = [];

@@ -61,7 +61,17 @@ The legacy `voiceInput.assistantIntelligence` and `voiceInput.deepSeekModel` set
 
 ## Speech, listening, and background resume
 
-**System speech is a temporary, OS-dependent path.** It uses voices the operating system exposes through the webview speech API. In **Voice**, select a voice URI, set a rate from 0.5 to 2, play a test phrase, stop speech, or disable it. A missing OS voice is reported as unavailable and never triggers Soniox or another fallback.
+**System speech is a temporary, OS-dependent path.** It uses voices the operating system exposes through the webview speech API. In **Voice**, select a voice URI, set a rate from 0.5 to 2, play a test phrase, stop speech, or disable it. A missing OS voice is reported as unavailable and never triggers a fallback you did not select. On Linux, where the editor's webview often exposes no OS voice at all, the host additionally offers one `speech-dispatcher` voice when the `spd-say` probe succeeds.
+
+**Soniox voices are an opt-in remote speech-output path.** They appear in the same **Voice** voice list, prefixed with `Soniox`, only while all of these hold:
+
+- Soniox is the explicitly selected transcription provider;
+- a Soniox key is stored in VS Code SecretStorage;
+- the machine/profile-local Soniox remote-processing consent is still valid.
+
+Speaking through such a voice sends the reply text to Soniox under that same consent, exactly as transcription sends audio, and plays the returned audio through `paplay` or `aplay`. The text and the audio are never written to a temporary file, never passed on a command line, and never logged. Selecting a Soniox voice while its consent, key, or provider selection has lapsed is not an error: the reply falls back to `speech-dispatcher`, then to the sidebar voice. Revoking the consent, rotating the key, or choosing another provider removes those voices again.
+
+Soniox bills generated speech audio separately from transcription, so previews and spoken replies through a Soniox voice consume your Soniox budget. Leave the voice list on an OS voice — or leave speech off — if you do not want that.
 
 **Listening is opt-in.** The normal path is an explicit start and a first-use disclosure. `voiceInput.assistantResumeOnStartup` is `false` by default. If you explicitly enable it in native VS Code Settings, the extension may resume listening after startup only when all of these are already true:
 
@@ -107,7 +117,7 @@ The extension has no arbitrary third-party-chat autofocus or submit capability. 
 | `voiceInput.providerProfiles` | Non-secret endpoint, model, and enabled-state profiles | Built-in profiles |
 | `voiceInput.assistantPersona` | Legacy persona migration setting | `teacher-lecturer` |
 | `voiceInput.assistantSpeechEnabled` | Enable temporary, OS-dependent system speech | `true` |
-| `voiceInput.assistantSpeechVoiceUri` | Selected system speech voice | `""` |
+| `voiceInput.assistantSpeechVoiceUri` | Selected speech voice: an OS voice URI, `voice-input-host:speech-dispatcher`, or `voice-input-soniox:<VoiceId>` | `""` |
 | `voiceInput.assistantSpeechRate` | Speech rate | `1` |
 | `voiceInput.transcriptionProvider` | `none`, `soniox`, or migration-only `legacy-soniox-pending` | `none` |
 | `voiceInput.autoMode` | Requested/display state; effective Auto also requires the machine-local native-confirmation receipt | `false` |
@@ -141,7 +151,8 @@ Never put an API key, bearer token, or secret in `voiceInput.providerProfiles`.
 | No microphone or recording stops | Check desktop VS Code microphone permission, then run **Select Audio Device** and choose a currently available device. |
 | Soniox is not ready | Verify explicit provider selection, native remote consent, and credential; then deliberately run its connection test. |
 | Startup did not resume listening | Confirm `assistantResumeOnStartup` is enabled and every startup gate above remains true; otherwise start listening explicitly. |
-| Speech has no desired voice | Install or enable a system voice, reopen the Voice Input view, then select it again. |
+| Speech has no desired voice | Install or enable a system voice, reopen the Voice Input view, then select it again. On Linux, `speech-dispatcher` (`spd-say`) and, with Soniox selected and consented, the `Soniox` voices are offered as well. |
+| A Soniox voice is silent | Confirm the Soniox key, the remote-processing consent, and that `paplay` or `aplay` exists on the machine. The reply still falls back to `speech-dispatcher` or the sidebar voice. |
 | Hebrew is wrong or unreadable | Set the Soniox hint to `he`, use the extension's Hebrew UI if desired, and prefer paste-oriented insertion for external controls. |
 | A chat did not submit | This is expected for third-party chat webviews. Review the pasted/drafted text and send it yourself. |
 

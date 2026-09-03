@@ -4,6 +4,21 @@ All notable changes to **Voice Input** are documented here. Format follows [Keep
 
 ## [Unreleased]
 
+## [2.3.0] — 2026-09-03
+
+### Fixed
+
+- Assistant background listening no longer stops after five minutes: the remote transcription session now renews itself proactively before its five-minute limit and recovers from transient network failures with up to three silent reconnect attempts (audio is buffered during recovery); listening stops only when reconnection fails or consent/credentials are revoked.
+- Voice-triggered confirmations now appear even when the VS Code window is not focused: the built-in and custom-mapping confirmation dialogs no longer require window focus before showing (workspace trust is still required, and the dialog itself remains the authorizing step). Typing into other applications still requires a focused window.
+- Control Center clicks are no longer lost while the panel is updating: navigation and device-test actions are accepted for any recently rendered state (last eight updates), while confirmations, credential, and authority actions still require the latest rendered state.
+- Soniox model list refresh no longer fails entirely when the language-list source is unavailable; each part now loads independently.
+
+### Added
+
+- Soniox text-to-speech voices: when a Soniox API key and remote-processing consent are present, the full Soniox voice roster (28 voices, all Hebrew-capable) appears in the Control Center voice list. Speech is synthesized by Soniox (model tts-rt-v2) and played locally; audio and text never touch disk, requests are sent only under the same machine-local consent as transcription, and Soniox bills per generated audio. On failure or missing consent, speech falls back to the local speech-dispatcher voice, then the sidebar.
+- Wake-phrase grace window: saying only the wake phrase now answers with a short prompt ("כן?" / "Yes?") and treats the next utterance within eight seconds as the command — no need to say everything in one breath.
+- One-time suggestion to enable "resume assistant on startup" after starting the assistant manually; silent startup-resume failures now log the specific unmet precondition.
+
 ## [2.2.0] — 2026-09-02
 
 ### Fixed

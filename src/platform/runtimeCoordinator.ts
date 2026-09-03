@@ -46,8 +46,9 @@ import { controlCenterOperationsPort } from './controlCenterOperationsPort';
 import { ControlCenterSetupChoices } from './controlCenterSetupChoices';
 import { ControlCenterStateCoordinator } from './controlCenterStateCoordinator';
 import { VsCodeCredentialCommandUi } from './credentialCommandUi';
+import { confirmPendingCustomAction } from './customActionConfirmation';
 import { detectToggleRecordingKeybinding } from './keybinding';
-import { autoDispatchTargetFingerprint, promptTargetFingerprint } from './promptBinding';
+import { autoDispatchTargetFingerprint } from './promptBinding';
 import { VsCodeMappingAgentToolHost } from './vscodeMappingAgentToolHost';
 import { VsCodeMappingExecutionHost } from './vscodeMappingExecutionHost';
 import { VsCodeMappingManagementHost } from './vscodeMappingManagementHost';
@@ -470,27 +471,13 @@ export async function activateVoiceInput(context: vscode.ExtensionContext): Prom
 
   async function confirmPending(kind: 'builtin' | 'custom'): Promise<void> {
     if (kind === 'builtin') return mappings.confirmPendingBuiltin();
-    const pending = mappings.pendingAction;
-    if (!pending) return;
-    if (!vscode.workspace.isTrusted || !vscode.window.state.focused) return;
-    const panelGeneration = control.generation;
-    const requestedTarget = promptTargetFingerprint(target.capture());
-    const confirm = localize('Run action', 'הפעלת פעולה');
-    const selected = await vscode.window.showWarningMessage(
-      localize(
-        `Run “${pending.label}” in the current VS Code target?`,
-        `להפעיל את „${pending.label}” ביעד הנוכחי של VS Code?`,
-      ),
-      { modal: true },
-      confirm,
-    );
-    // Window focus is not re-checked after the modal: the modal blurs its own window.
-    if (selected === confirm
-      && vscode.workspace.isTrusted
-      && panelGeneration === control.generation
-      && requestedTarget === promptTargetFingerprint(target.capture())
-      && mappings.pendingAction?.id === pending.id) {
-      await mappings.confirmIfPending(pending.id, assistant.nextId('control-center-confirm'));
-    }
+    await confirmPendingCustomAction({
+      pendingAction: () => mappings.pendingAction,
+      confirmIfPending: (id, confirmationId) => mappings.confirmIfPending(id, confirmationId),
+      nextConfirmationId: () => assistant.nextId('control-center-confirm'),
+      panelGeneration: () => control.generation,
+      captureTarget: () => target.capture(),
+      localize,
+    });
   }
 }

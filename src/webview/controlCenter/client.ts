@@ -15,11 +15,7 @@ import {
   focusControlCenterTarget,
   restoreFocusBookmark,
 } from './focus';
-import {
-  isHostChannelVoice,
-  mergeSystemVoices,
-  sonioxSystemVoices,
-} from './hostVoices';
+import { hostChannelVoices, isHostChannelVoice, mergeSystemVoices } from './hostVoices';
 import { CONTROL_CENTER_STRINGS } from './i18n';
 import {
   openActionPreviewOverlay,
@@ -282,12 +278,8 @@ function renderCurrent(preferredFocusId?: string): void {
 
 function resourcesWithSpeech(): ControlCenterManagementResources {
   const local = systemSpeech.presentation();
-  // Soniox voices arrive as bare ids and are expanded here exactly as the host expands
-  // them, so both sides index one identical list.
-  const hostVoices = [
-    ...resources.setup?.hostVoices ?? [],
-    ...sonioxSystemVoices(resources.setup?.sonioxVoices ?? [], snapshot?.state.language),
-  ];
+  // Soniox voices arrive as bare ids and expand here exactly as they do host-side.
+  const hostVoices = hostChannelVoices(resources.setup, snapshot?.state.language);
   // The host appends its own voices to the observed ones and indexes the merged list,
   // so the dropdown must render exactly that list for a voice index to mean one voice.
   return {

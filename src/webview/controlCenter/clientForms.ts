@@ -5,7 +5,7 @@ import {
 } from './contracts';
 import { readCustomCommandDraft } from './customCommands';
 import { updateCommandFilterState } from './filters';
-import { MAX_SYSTEM_VOICE_CHOICES } from './hostVoices';
+import { isSystemVoiceIndex } from './hostVoices';
 import { submitAgentProfile, submitProviderProfile } from './managementClient';
 
 type ControlCenterSnapshot = Extract<ControlCenterHostMessage, { type: 'stateSnapshot' }>;
@@ -47,9 +47,7 @@ function handleControlChange(event: Event, context: ControlCenterFormContext): v
       operation: 'set-enabled', enabled: target.value === 'system' });
   } else if (target.dataset.action === 'system-tts-voice') {
     const voiceIndex = Number(target.value);
-    if (Number.isInteger(voiceIndex)
-      && voiceIndex >= -1
-      && voiceIndex <= MAX_SYSTEM_VOICE_CHOICES - 1) post({
+    if (isSystemVoiceIndex(voiceIndex)) post({
       type: 'systemTtsIntent', revision: snapshot.revision, operation: 'set-voice', voiceIndex,
     });
   } else if (target.dataset.action === 'system-tts-rate') {

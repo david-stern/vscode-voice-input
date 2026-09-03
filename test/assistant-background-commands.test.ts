@@ -20,8 +20,10 @@ import {
 } from '../src/features/assistant/sessionTranscriptProcessor';
 import type { MappingFeature } from '../src/features/mappings';
 import {
+  VOICE_CONFIRMATION_ARMING_DELAY_MS,
   acceptsBuiltinConfirmation,
   allowsBuiltinConfirmationPrompt,
+  voiceConfirmationArmed,
 } from '../src/platform/builtinConfirmationGate';
 
 const SNAPSHOT: TargetSnapshot = {
@@ -175,19 +177,27 @@ test('voice confirmations may be raised while VS Code is unfocused but never whi
   assert.equal(allowsBuiltinConfirmationPrompt({ workspaceTrusted: true }), true);
   assert.equal(allowsBuiltinConfirmationPrompt({ workspaceTrusted: false }), false);
 
+  const armed = VOICE_CONFIRMATION_ARMING_DELAY_MS;
   assert.equal(acceptsBuiltinConfirmation({
     accepted: true,
+    elapsedMs: armed,
     workspaceTrusted: true,
     panelGeneration: 4,
     capturedPanelGeneration: 4,
   }), true);
   for (const outcome of [
-    { accepted: false, workspaceTrusted: true, panelGeneration: 4, capturedPanelGeneration: 4 },
-    { accepted: true, workspaceTrusted: false, panelGeneration: 4, capturedPanelGeneration: 4 },
-    { accepted: true, workspaceTrusted: true, panelGeneration: 5, capturedPanelGeneration: 4 },
+    { accepted: false, elapsedMs: armed, workspaceTrusted: true, panelGeneration: 4, capturedPanelGeneration: 4 },
+    { accepted: true, elapsedMs: armed, workspaceTrusted: false, panelGeneration: 4, capturedPanelGeneration: 4 },
+    { accepted: true, elapsedMs: armed, workspaceTrusted: true, panelGeneration: 5, capturedPanelGeneration: 4 },
+    // A stray Enter already in flight when the modal steals focus resolves near-instantly.
+    { accepted: true, elapsedMs: armed - 1, workspaceTrusted: true, panelGeneration: 4, capturedPanelGeneration: 4 },
   ]) {
     assert.equal(acceptsBuiltinConfirmation(outcome), false, JSON.stringify(outcome));
   }
+
+  assert.equal(voiceConfirmationArmed(0), false);
+  assert.equal(voiceConfirmationArmed(armed - 1), false);
+  assert.equal(voiceConfirmationArmed(armed), true);
 });
 
 test('startup resume is offered once and both explicit answers are persisted', async () => {
