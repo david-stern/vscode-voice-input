@@ -114,9 +114,11 @@ export function startPcmCapture(source: PcmSource, options: PcmCaptureOptions): 
 
       const remaining = options.maxSamples - acceptedSamples;
       const accepted = frame.length > remaining ? frame.slice(0, remaining) : frame.slice();
-      if (accepted.length > 0) {
+      // The consumer owns the frame and may detach its buffer, so count first.
+      const acceptedLength = accepted.length;
+      if (acceptedLength > 0) {
         options.onFrame(accepted);
-        acceptedSamples += accepted.length;
+        acceptedSamples += acceptedLength;
       }
 
       if (acceptedSamples >= options.maxSamples) {

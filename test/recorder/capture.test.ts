@@ -74,6 +74,28 @@ test('stop is idempotent and releases native resources exactly once', async () =
   assert.deepEqual(Array.from(frames[0]), [1, 2, 3]);
 });
 
+test('a consumer that transfers the frame still counts the accepted samples', async () => {
+  const source = new FakeSource();
+  const lengthsAfterTransfer: number[] = [];
+  const capture = startPcmCapture(source, {
+    maxSamples: 100,
+    maxDurationMs: 5_000,
+    onFrame: (frame) => {
+      // The worker hands frames to the host thread without a copy, which detaches them.
+      structuredClone(frame, { transfer: [frame.buffer as ArrayBuffer] });
+      lengthsAfterTransfer.push(frame.length);
+    },
+  });
+
+  source.emit(1, 2, 3);
+  await nextTurn();
+  assert.deepEqual(lengthsAfterTransfer, [0], 'the transferred frame must be detached');
+  assert.equal(capture.samplesCaptured, 3);
+
+  await capture.stop();
+  assert.deepEqual(await capture.outcome, { reason: 'stopped' });
+});
+
 test('cancel is idempotent and a later stop remains safe', async () => {
   const source = new FakeSource();
   const capture = startPcmCapture(source, {

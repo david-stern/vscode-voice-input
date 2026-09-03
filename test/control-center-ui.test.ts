@@ -4,6 +4,13 @@ import test from 'node:test';
 
 import { CONTROL_CENTER_ROUTES } from '../src/webview/controlCenter/contracts';
 import { renderControlCenterDocument } from '../src/webview/controlCenter/document';
+import {
+  HOST_SPEECH_VOICE_URI,
+  MAX_SONIOX_TTS_VOICES,
+  MAX_SYSTEM_VOICE_CHOICES,
+  mergeSystemVoices,
+  sonioxSystemVoices,
+} from '../src/webview/controlCenter/hostVoices';
 import { CONTROL_CENTER_STRINGS } from '../src/webview/controlCenter/i18n';
 import { resolveSetupReloadState } from '../src/webview/controlCenter/routes/setup';
 
@@ -114,6 +121,56 @@ test('setup panels expose microphone proof, Soniox skip, system speech, and auth
   assert.match(systemSpeech, /: undefined\s*\n\s*: selectSpeechVoice/u);
 });
 
+test('the browser renders the merged voice list the host indexes and defers host previews', () => {
+  const observed = Array.from({ length: MAX_SYSTEM_VOICE_CHOICES }, (_, index) => ({
+    voiceUri: `os:${index}`, name: `Voice ${index}`, language: 'en', isDefault: false,
+  }));
+  const host = [{
+    voiceUri: HOST_SPEECH_VOICE_URI, name: 'System speech (speech-dispatcher)',
+    language: 'he', isDefault: false,
+  }];
+  assert.deepEqual(mergeSystemVoices(observed, []), observed, 'no host fallback changes nothing');
+  const merged = mergeSystemVoices(observed, host);
+  assert.equal(merged.length, MAX_SYSTEM_VOICE_CHOICES, 'the protocol index bound is never exceeded');
+  assert.deepEqual(merged.slice(0, MAX_SYSTEM_VOICE_CHOICES - 1), observed.slice(0, MAX_SYSTEM_VOICE_CHOICES - 1));
+  assert.equal(merged[MAX_SYSTEM_VOICE_CHOICES - 1].voiceUri, HOST_SPEECH_VOICE_URI);
+  assert.deepEqual(mergeSystemVoices([], host), host, 'an empty browser list still offers the host voice');
+  assert.deepEqual(mergeSystemVoices(host, host), host, 'a host voice is never listed twice');
+
+  // Soniox voices travel as bare ids and expand identically on both sides, so the merged
+  // list the browser renders is exactly the list the host indexes.
+  const expanded = sonioxSystemVoices(['Maya', 'Maya', '0bad', 'Adrian'], 'en');
+  assert.deepEqual(expanded, [
+    { voiceUri: 'voice-input-soniox:Maya', name: 'Soniox Maya (remote)', language: '', isDefault: false },
+    { voiceUri: 'voice-input-soniox:Adrian', name: 'Soniox Adrian (remote)', language: '', isDefault: false },
+  ]);
+  assert.equal(sonioxSystemVoices(['Maya'], 'he')[0].name, 'Soniox Maya (מרוחק)');
+  assert.equal(
+    sonioxSystemVoices(Array.from({ length: 40 }, (_, index) => `Voice${index}`), 'en').length,
+    MAX_SONIOX_TTS_VOICES,
+    'the expansion is bounded on both sides',
+  );
+  const channel = mergeSystemVoices(observed.slice(0, 2), [...host, ...expanded]);
+  assert.deepEqual(channel.map(({ voiceUri }) => voiceUri), [
+    'os:0', 'os:1', HOST_SPEECH_VOICE_URI,
+    'voice-input-soniox:Maya', 'voice-input-soniox:Adrian',
+  ], 'browser voices first, then speech-dispatcher, then the remote roster');
+
+  const client = readFileSync('src/webview/controlCenter/client.ts', 'utf8');
+  const setup = readFileSync('src/webview/controlCenter/routes/setup.ts', 'utf8');
+  assert.match(client, /mergeSystemVoices\(local\.voices, hostVoices\)/u);
+  assert.match(client, /sonioxSystemVoices\(resources\.setup\?\.sonioxVoices \?\? \[\]/u);
+  assert.match(client, /isHostChannelVoice\(selected\.voiceUri\)/u);
+  assert.match(client, /operation: 'preview'/u);
+  // A host preview is audible outside this browser, so its Stop control must stay usable.
+  assert.match(client, /hostPreviewActive = true;\s*\n\s*post\(\{ type: 'systemTtsIntent'/u);
+  assert.match(client, /previewState: hostPreviewActive \? 'speaking' : local\.previewState/u);
+  assert.match(client, /operation: 'preview-stop'/u);
+  assert.match(client, /function stopSystemVoice\(\): void \{\s*\n\s*systemSpeech\.stop\(\);/u);
+  assert.match(client, /hostPreviewActive = false;/u);
+  assert.match(setup, /stop\.disabled = speech\.previewState !== 'speaking'/u);
+});
+
 test('setup reload selects the authoritative safe next step and preserves explicit transient selection', () => {
   assert.deepEqual(resolveSetupReloadState(undefined, {
     stepStates: ['pending', 'pending', 'pending', 'pending'], recommendedStep: 1,
@@ -133,7 +190,7 @@ test('pending action preview closes its DOM before emitting payload-free confirm
   const client = readFileSync('src/webview/controlCenter/client.ts', 'utf8');
   const overlays = readFileSync('src/webview/controlCenter/clientOverlays.ts', 'utf8');
   const start = client.indexOf('function closeForPendingDecision');
-  const end = client.indexOf('function postCustomCommandAction', start);
+  const end = client.indexOf('function cancelCustomCommandEdit', start);
   const decision = client.slice(start, end);
   assert.ok(start >= 0 && end > start);
   assert.ok(decision.indexOf('closeForNativePrompt') < decision.indexOf("type: 'pendingReviewIntent'"));

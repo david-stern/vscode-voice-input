@@ -92,6 +92,19 @@ export type ControlCenterBrowserMessage =
       rate: number;
     }
   | {
+      // The host composes the preview sentence and reads voice and rate from settings,
+      // so this intent carries no browser-authored text or parameters.
+      type: 'systemTtsIntent';
+      revision: number;
+      operation: 'preview';
+    }
+  | {
+      // Stops a host preview. Playback control needs no parameters either.
+      type: 'systemTtsIntent';
+      revision: number;
+      operation: 'preview-stop';
+    }
+  | {
       type: 'commandEditIntent';
       revision: number;
       commandId: string;

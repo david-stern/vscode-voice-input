@@ -16,6 +16,12 @@ import {
   focusControlCenterTarget,
   restoreFocusBookmark,
 } from './focus';
+import {
+  isHostChannelVoice,
+  MAX_SYSTEM_VOICE_CHOICES,
+  mergeSystemVoices,
+  sonioxSystemVoices,
+} from './hostVoices';
 import { CONTROL_CENTER_STRINGS } from './i18n';
 import {
   openActionPreviewOverlay,
@@ -27,6 +33,7 @@ import {
 } from './clientOverlays';
 import {
   postAgentAction,
+  postCustomCommandAction,
   postPlanningProviderAction,
   submitAgentProfile,
   submitProviderProfile,
@@ -74,6 +81,9 @@ let interactionSequence = 0;
 let pendingCommandDetails: string | undefined;
 let pendingCustomCommandDetails: string | undefined;
 let lastVoiceObservationKey = '';
+// Host previews are played outside this browser, so only the client that asked for one
+// knows it is running. The flag is cleared by stopping it or by the next host snapshot.
+let hostPreviewActive = false;
 const transcriptSequences = new Map<string, number>();
 
 window.addEventListener('message', (event) => {
@@ -163,13 +173,16 @@ document.addEventListener('click', (event) => {
   else if (action === 'open-diagnostics') postDiagnostics('open');
   else if (action === 'copy-diagnostics') postDiagnostics('copy');
   else if (action === 'preview-system-voice') previewSystemVoice();
-  else if (action === 'stop-system-voice') systemSpeech.stop();
+  else if (action === 'stop-system-voice') stopSystemVoice();
   else if (actionTarget.closest('[data-provider-id]')) {
     postPlanningProviderAction(action, actionTarget, snapshot.revision, post);
   } else if (actionTarget.closest('[data-agent-id]')) {
     postAgentAction(action, actionTarget, snapshot.revision, post);
   } else if (actionTarget.closest('[data-custom-command-id]')) {
-    postCustomCommandAction(action, actionTarget);
+    postCustomCommandAction(action, actionTarget, snapshot.revision, post, (id) => {
+      pendingCustomCommandDetails = id;
+      return nextInteractionSequence();
+    });
   }
 });
 
@@ -192,7 +205,9 @@ document.addEventListener('change', (event) => {
       operation: 'set-enabled', enabled: target.value === 'system' });
   } else if (target.dataset.action === 'system-tts-voice') {
     const voiceIndex = Number(target.value);
-    if (Number.isInteger(voiceIndex) && voiceIndex >= -1 && voiceIndex <= 19) post({
+    if (Number.isInteger(voiceIndex)
+      && voiceIndex >= -1
+      && voiceIndex <= MAX_SYSTEM_VOICE_CHOICES - 1) post({
       type: 'systemTtsIntent', revision: snapshot.revision, operation: 'set-voice', voiceIndex,
     });
   } else if (target.dataset.action === 'system-tts-rate') {
@@ -266,6 +281,7 @@ function acceptSnapshot(message: Extract<ControlCenterHostMessage, { type: 'stat
   view.currentShell?.menu.setAttribute('aria-expanded', 'false');
   resources = {};
   currentRows = [];
+  hostPreviewActive = false;
   pendingCommandDetails = undefined;
   pendingCustomCommandDetails = undefined;
   if (message.state.route === 'commands' && (message.state.commandPage?.chunkCount ?? 0) > 0) {
@@ -340,7 +356,22 @@ function renderCurrent(preferredFocusId?: string): void {
 }
 
 function resourcesWithSpeech(): ControlCenterManagementResources {
-  return { ...resources, systemSpeech: systemSpeech.presentation() };
+  const local = systemSpeech.presentation();
+  // Soniox voices arrive as bare ids and are expanded here exactly as the host expands
+  // them, so both sides index one identical list.
+  const hostVoices = [
+    ...resources.setup?.hostVoices ?? [],
+    ...sonioxSystemVoices(resources.setup?.sonioxVoices ?? [], snapshot?.state.language),
+  ];
+  // The host appends its own voices to the observed ones and indexes the merged list,
+  // so the dropdown must render exactly that list for a voice index to mean one voice.
+  return {
+    ...resources,
+    systemSpeech: {
+      voices: hostVoices.length === 0 ? local.voices : mergeSystemVoices(local.voices, hostVoices),
+      previewState: hostPreviewActive ? 'speaking' : local.previewState,
+    },
+  };
 }
 
 function closeForPendingDecision(
@@ -356,26 +387,6 @@ function closeForPendingDecision(
   post({ type: 'pendingReviewIntent', revision, decision });
 }
 
-function postCustomCommandAction(action: string | undefined, target: HTMLElement): void {
-  if (!snapshot) return;
-  const id = target.closest<HTMLElement>('[data-custom-command-id]')?.dataset.customCommandId;
-  if (!id) return;
-  if (action === 'toggle-custom-command') post({
-    type: 'customCommandIntent', revision: snapshot.revision,
-    operation: 'set-enabled', id, enabled: target.dataset.enabled === 'true',
-  });
-  else if (action === 'edit-custom-command') {
-    pendingCustomCommandDetails = id;
-    post({
-      type: 'customCommandIntent', revision: snapshot.revision,
-      operation: 'open', id, requestSequence: nextInteractionSequence(),
-    });
-  }
-  else if (action === 'delete-custom-command') post({
-    type: 'customCommandIntent', revision: snapshot.revision, operation: 'delete', id,
-  });
-}
-
 function cancelCustomCommandEdit(): void {
   pendingCustomCommandDetails = undefined;
   const remaining = { ...resources };
@@ -388,12 +399,29 @@ function previewSystemVoice(): void {
   if (!snapshot) return;
   const voice = document.querySelector<HTMLSelectElement>('#system-tts-voice');
   const rate = document.querySelector<HTMLInputElement>('#system-tts-rate');
+  const voiceIndex = Number(voice?.value ?? -1);
+  const selected = resourcesWithSpeech().systemSpeech?.voices[voiceIndex];
+  // A host-channel voice cannot be played by this browser: the host previews it for us.
+  if (selected && isHostChannelVoice(selected.voiceUri)) {
+    hostPreviewActive = true;
+    post({ type: 'systemTtsIntent', revision: snapshot.revision, operation: 'preview' });
+    renderCurrent();
+    return;
+  }
   systemSpeech.preview(
     CONTROL_CENTER_STRINGS[snapshot.state.language].systemVoicePreviewText,
-    Number(voice?.value ?? -1),
+    voiceIndex,
     Number(rate?.value ?? 1),
     snapshot.state.language,
   );
+}
+
+function stopSystemVoice(): void {
+  systemSpeech.stop();
+  if (!hostPreviewActive || !snapshot) return;
+  hostPreviewActive = false;
+  post({ type: 'systemTtsIntent', revision: snapshot.revision, operation: 'preview-stop' });
+  renderCurrent();
 }
 
 function refreshSystemVoices(): void {

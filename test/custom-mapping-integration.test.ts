@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import test from 'node:test';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
@@ -46,7 +47,11 @@ const mapping: CustomMapping = {
 };
 
 test('manifest requires the Agent-tool compatible VS Code API and aligned typings', () => {
-  assert.equal(manifest.version, '2.1.0');
+  // The released version is whatever package.json declares, so a version bump never
+  // breaks this suite; only its shape and the API/typing floor are asserted here.
+  const declared = createRequire(import.meta.url)('../package.json') as { version: string };
+  assert.equal(manifest.version, declared.version);
+  assert.match(manifest.version, /^\d+\.\d+\.\d+$/u);
   assert.equal(manifest.engines.vscode, '^1.99.0');
   assert.equal(manifest.devDependencies['@types/vscode'], '^1.99.0');
   assert.equal(manifest.capabilities?.untrustedWorkspaces?.supported, 'limited');

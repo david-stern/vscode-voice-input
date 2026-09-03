@@ -34,7 +34,7 @@ import { MicViewProvider } from '../webview/micView';
 import { SettingsViewProvider } from '../webview/settingsView';
 import { VsCodeAssistantActionHost } from './assistantActionHost';
 import { VsCodeAssistantSessionUi } from './assistantSessionUi';
-import { BuiltinVoiceCoordinator, targetFingerprint } from './builtinVoiceCoordinator';
+import { BuiltinVoiceCoordinator } from './builtinVoiceCoordinator';
 import {
   VsCodeControlCenterPanelFactory,
   VsCodeControlCenterPersistence,
@@ -42,10 +42,12 @@ import {
 } from './controlCenterPanel';
 import { ControlCenterManagementBridge } from './controlCenterManagement';
 import { ControlCenterOperations } from './controlCenterOperations';
+import { controlCenterOperationsPort } from './controlCenterOperationsPort';
 import { ControlCenterSetupChoices } from './controlCenterSetupChoices';
 import { ControlCenterStateCoordinator } from './controlCenterStateCoordinator';
 import { VsCodeCredentialCommandUi } from './credentialCommandUi';
 import { detectToggleRecordingKeybinding } from './keybinding';
+import { autoDispatchTargetFingerprint, promptTargetFingerprint } from './promptBinding';
 import { VsCodeMappingAgentToolHost } from './vscodeMappingAgentToolHost';
 import { VsCodeMappingExecutionHost } from './vscodeMappingExecutionHost';
 import { VsCodeMappingManagementHost } from './vscodeMappingManagementHost';
@@ -54,6 +56,7 @@ import { VsCodeRecordingUi } from './recordingUi';
 import { VsCodeSettingsNativeUi } from './settingsNativeUi';
 import { VsCodeSettingsRegistrationHost } from './settingsRegistrationHost';
 import { VoiceInputStatusBar } from './statusBar';
+import { createSpeechOutputWiring } from './speechOutputWiring';
 import { VsCodeTargetContext } from './targetContext';
 import { VoiceAuthorityCoordinator } from './voiceAuthorityCoordinator';
 import { VsCodeCommandRegistrationHost, VsCodeCommandWorkflows } from './voiceInputCommands';
@@ -141,7 +144,7 @@ export async function activateVoiceInput(context: vscode.ExtensionContext): Prom
     storage: context.globalState,
     executionHost: new VsCodeMappingExecutionHost(
       authority.autoAuthority,
-      () => targetFingerprint(target.capture()),
+      () => autoDispatchTargetFingerprint(target.capture()),
     ),
     managementHost: new VsCodeMappingManagementHost(),
     agentToolHost: new VsCodeMappingAgentToolHost(),
@@ -154,7 +157,7 @@ export async function activateVoiceInput(context: vscode.ExtensionContext): Prom
     publish: publishFull,
     builtins,
     autoMode: authority.autoAuthority,
-    targetFingerprint,
+    targetFingerprint: autoDispatchTargetFingerprint, // must match the execution host above
   });
   mappingsRef.current = mappings;
   const setupChoices = new ControlCenterSetupChoices(context.globalState);
@@ -183,21 +186,7 @@ export async function activateVoiceInput(context: vscode.ExtensionContext): Prom
     agentManagement: (message): Promise<void> => (
       managementRef.current?.agentManagement(message) ?? Promise.resolve()
     ),
-    operations: {
-      setupState: () => controlOperationsRef.current?.setupState() ?? {
-        microphoneState: 'untested', microphoneLabel: '', systemTtsEnabled: false,
-        systemTtsVoiceIndex: -1, systemTtsRate: 1,
-        stepStates: ['pending', 'pending', 'complete', 'pending'], recommendedStep: 1,
-      },
-      diagnosticsState: () => controlOperationsRef.current?.diagnosticsState() ?? {
-        status: 'idle', summary: '', checks: [], canOpen: false, canCopy: false,
-      },
-      systemTtsState: () => controlOperationsRef.current?.systemTtsState() ?? 'off',
-      microphone: (message) => controlOperationsRef.current?.microphone(message) ?? Promise.resolve(),
-      observeVoices: (voices) => controlOperationsRef.current?.observeVoices(voices),
-      systemTts: (message) => controlOperationsRef.current?.systemTts(message) ?? Promise.resolve(),
-      diagnostics: (message) => controlOperationsRef.current?.diagnostics(message) ?? Promise.resolve(),
-    },
+    operations: controlCenterOperationsPort(controlOperationsRef),
     publish: publishFull,
     log,
   });
@@ -264,6 +253,14 @@ export async function activateVoiceInput(context: vscode.ExtensionContext): Prom
     injectText,
   });
   recordingRef.current = recording;
+  // VS Code's Electron webview reports no speechSynthesis voices on some Linux builds, so
+  // the host keeps a probed speech-dispatcher fallback plus the consent-gated Soniox path.
+  const speechOutput = createSpeechOutputWiring({
+    browser: micProvider, settings, credentials, localize, log,
+    authority: authority.sonioxConsent,
+    publish: () => { void publishFull(); },
+    onFinished: (id, outcome) => assistantRef.current?.speechFinished(id, outcome),
+  });
   const assistant = new AssistantFeature({
     settings, credentials, consents, agents, mappingApprovals,
     isWorkspaceTrusted: () => vscode.workspace.isTrusted,
@@ -273,7 +270,7 @@ export async function activateVoiceInput(context: vscode.ExtensionContext): Prom
     mappings,
     target,
     actionHost: new VsCodeAssistantActionHost(target, localize),
-    speech: micProvider,
+    speech: speechOutput.delivery,
     feedbackStatus: status,
     sessionStatus: status,
     sessionUi: new VsCodeAssistantSessionUi(localize),
@@ -383,6 +380,7 @@ export async function activateVoiceInput(context: vscode.ExtensionContext): Prom
   });
   const controlOperations = new ControlCenterOperations({
     settings, setupChoices,
+    hostSpeech: speechOutput.host, sonioxTts: speechOutput.soniox,
     devices,
     diagnostics,
     selectAudioDevice: () => workflows.selectAudioDevice(),
@@ -405,7 +403,7 @@ export async function activateVoiceInput(context: vscode.ExtensionContext): Prom
     readiness,
     status,
     control,
-    controlOperations,
+    controlOperations, speechOutput,
     authority,
     vscode.window.registerWebviewViewProvider(MicViewProvider.viewType, micProvider, {
       webviewOptions: { retainContextWhenHidden: true },
@@ -476,7 +474,7 @@ export async function activateVoiceInput(context: vscode.ExtensionContext): Prom
     if (!pending) return;
     if (!vscode.workspace.isTrusted || !vscode.window.state.focused) return;
     const panelGeneration = control.generation;
-    const requestedTarget = targetFingerprint(target.capture());
+    const requestedTarget = promptTargetFingerprint(target.capture());
     const confirm = localize('Run action', 'הפעלת פעולה');
     const selected = await vscode.window.showWarningMessage(
       localize(
@@ -486,11 +484,11 @@ export async function activateVoiceInput(context: vscode.ExtensionContext): Prom
       { modal: true },
       confirm,
     );
+    // Window focus is not re-checked after the modal: the modal blurs its own window.
     if (selected === confirm
       && vscode.workspace.isTrusted
-      && vscode.window.state.focused
       && panelGeneration === control.generation
-      && requestedTarget === targetFingerprint(target.capture())
+      && requestedTarget === promptTargetFingerprint(target.capture())
       && mappings.pendingAction?.id === pending.id) {
       await mappings.confirmIfPending(pending.id, assistant.nextId('control-center-confirm'));
     }

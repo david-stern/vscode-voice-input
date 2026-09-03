@@ -147,27 +147,40 @@ export function parseAssistantText(
   if (!wakeMatch) return { wakeDetected: false, intent: null };
 
   const postWakeText = trimWakeSeparator(text.slice(wakeMatch.length));
+  return {
+    wakeDetected: true,
+    wakePhrase: wakeMatch.phrase,
+    postWakeText,
+    intent: parseAssistantCommand(postWakeText),
+  };
+}
+
+/**
+ * Classifies text that a wake phrase already authorized, either as its own prefix or
+ * through a wake-armed window. The vocabulary is identical in both cases: exact,
+ * allowlisted action phrases, and paste-only text with `submit: false` otherwise.
+ */
+export function parseAssistantCommand(postWakeText: string): AssistantIntent {
   const normalizedCommand = normalizeCommand(postWakeText);
   for (const [action, phrases] of Object.entries(ACTION_PHRASES) as [
     AssistantAction,
     readonly string[],
   ][]) {
     if (phrases.some((phrase) => normalizeCommand(phrase) === normalizedCommand)) {
-      return {
-        wakeDetected: true,
-        wakePhrase: wakeMatch.phrase,
-        postWakeText,
-        intent: { kind: 'action', action },
-      };
+      return { kind: 'action', action };
     }
   }
+  return { kind: 'paste', text: postWakeText, submit: false };
+}
 
-  return {
-    wakeDetected: true,
-    wakePhrase: wakeMatch.phrase,
-    postWakeText,
-    intent: { kind: 'paste', text: postWakeText, submit: false },
-  };
+/** True when the utterance carried the wake phrase and nothing else. */
+export function isWakeOnlyUtterance(parsed: AssistantParseResult): boolean {
+  return parsed.wakeDetected && parsed.postWakeText.length === 0;
+}
+
+/** Strips the separators a wake-armed command may still lead with. */
+export function trimAssistantCommand(text: string): string {
+  return trimWakeSeparator(text);
 }
 
 function findWakePhrase(

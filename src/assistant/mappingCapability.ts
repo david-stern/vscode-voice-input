@@ -80,7 +80,11 @@ export class MappingCapabilityPolicy {
     ) {
       return { allowed: false, reason: 'mapping-changed' };
     }
-    if (!revalidateTargetSnapshot(pending.snapshot, currentSnapshot).valid) {
+    // The request path already required a focused window. This confirmation may arrive
+    // after a native modal that blurred that window, and it dispatches only VS Code
+    // commands or agent tools — never keystrokes — so target identity is revalidated
+    // without the focus clause.
+    if (!revalidateTargetSnapshot(pending.snapshot, currentSnapshot, { requireFocus: false }).valid) {
       return { allowed: false, reason: 'target-changed' };
     }
     return {

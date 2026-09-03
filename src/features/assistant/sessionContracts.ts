@@ -16,15 +16,23 @@ export interface AssistantSessionStatusPort {
   stoppedWithError(message: string): void;
 }
 
+/** 'ignored' means the notification closed itself, so no preference was expressed. */
+export type AssistantResumeSuggestionChoice = 'enable' | 'dismiss' | 'ignored';
+
 export interface AssistantSessionUiPort {
   confirmListeningDisclosure(): PromiseLike<boolean>;
   showMissingSonioxCredential(): PromiseLike<boolean>;
   showError(message: string): PromiseLike<unknown>;
   executeCommand(commandId: string): PromiseLike<unknown>;
+  /** Non-modal, one-time discovery of startup resume after an explicit manual start. */
+  suggestStartupResume?(): PromiseLike<AssistantResumeSuggestionChoice>;
 }
 
+export type AssistantSettingsPort = Pick<SettingsRepository, 'read'>
+  & Partial<Pick<SettingsRepository, 'update' | 'hasExplicitGlobal'>>;
+
 export interface AssistantSessionControllerOptions {
-  settings: Pick<SettingsRepository, 'read'>;
+  settings: AssistantSettingsPort;
   credentials: Pick<CredentialService, 'status'>
     & Partial<Pick<CredentialService, 'onDidInvalidate'>>;
   consents: Pick<ConsentService, 'status' | 'revision' | 'acknowledgeIfCurrent'>
@@ -45,6 +53,7 @@ export interface AssistantSessionControllerOptions {
   isDeactivating(): boolean;
   setTimer?: (callback: () => void, delayMs: number) => ReturnType<typeof setTimeout>;
   clearTimer?: (timer: ReturnType<typeof setTimeout>) => void;
+  now?: () => number;
   speechProviders?: Pick<SpeechProviderRegistry, 'openStreaming'>;
   onTranscript?(event: StreamingTranscriptEvent): void;
 }

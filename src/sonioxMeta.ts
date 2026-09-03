@@ -161,14 +161,21 @@ export async function fetchModels(apiKey: string): Promise<ModelInfo[]> {
   }
 }
 
+/** A hung docs page must never keep a metadata refresh in its loading state. */
+export const LANGUAGE_SCRAPE_TIMEOUT_MS = 5_000;
+
 /**
- * Best-effort scrape of the public docs page. Falls back to the hardcoded
- * list on any failure. Languages change rarely — the hardcoded list is the
- * primary source of truth, this just lets users refresh on demand.
+ * Best-effort scrape of the public docs page. Falls back to the hardcoded list on any
+ * failure and is bounded by its own timeout, so it can neither reject nor hang: the
+ * caller's model fetch has to stay independent of a docs page it does not control.
+ * Languages change rarely — the hardcoded list is the primary source of truth, this
+ * just lets users refresh on demand.
  */
 export async function fetchLanguages(): Promise<LanguageInfo[]> {
+  const control = new AbortController();
+  const timer = setTimeout(() => control.abort(), LANGUAGE_SCRAPE_TIMEOUT_MS);
   try {
-    const res = await fetch(LANG_DOCS_URL);
+    const res = await fetch(LANG_DOCS_URL, { signal: control.signal });
     if (!res.ok) throw new Error(`docs HTTP ${res.status}`);
     const html = await res.text();
     const langs = parseLangsFromHtml(html);
@@ -176,6 +183,8 @@ export async function fetchLanguages(): Promise<LanguageInfo[]> {
     return [{ code: 'auto', name: 'Auto-detect' }, ...langs];
   } catch {
     return HARDCODED_LANGUAGES;
+  } finally {
+    clearTimeout(timer);
   }
 }
 

@@ -1,4 +1,11 @@
-import { DEFAULT_WAKE_PHRASES, parseAssistantText } from '../../assistant';
+import {
+  DEFAULT_WAKE_PHRASES,
+  isWakeOnlyUtterance,
+  parseAssistantCommand,
+  parseAssistantText,
+  trimAssistantCommand,
+  type AssistantIntent,
+} from '../../assistant';
 import type { TargetSnapshot } from '../../assistant/context';
 import type { SettingsRepository } from '../../config';
 import { PlannerError } from '../../inference';
@@ -14,6 +21,9 @@ export class AssistantFinalTranscriptError extends Error {
   }
 }
 
+/** A wake phrase spoken alone arms this window for exactly one following utterance. */
+export const WAKE_ARM_WINDOW_MS = 8_000;
+
 export interface AssistantFinalTranscriptProcessorOptions {
   settings: Pick<SettingsRepository, 'read'>;
   mappings: Pick<MappingFeature, 'routeVoiceRequest'>;
@@ -21,11 +31,24 @@ export interface AssistantFinalTranscriptProcessorOptions {
   actions: AssistantActionController;
   feedback: AssistantFeedbackController;
   localize(english: string, hebrew: string): string;
+  now?(): number;
 }
 
 /** Only finalized text may cross this wake/matcher/planner/action boundary. */
 export class AssistantFinalTranscriptProcessor {
+  private armedUntil = 0;
+
   constructor(private readonly options: AssistantFinalTranscriptProcessorOptions) {}
+
+  /** True while a wake-only utterance still authorizes the next finalized utterance. */
+  get isWakeArmed(): boolean {
+    return this.armedUntil > this.now();
+  }
+
+  /** Listening stops, session changes and consumed windows all clear the arming. */
+  disarmWake(): void {
+    this.armedUntil = 0;
+  }
 
   async process(
     text: string,
@@ -36,31 +59,27 @@ export class AssistantFinalTranscriptProcessor {
     beforeActionBoundary?: () => void,
   ): Promise<void> {
     if (!text || signal.aborted || !isCurrent()) return;
-    const settings = this.options.settings.read().values;
-    const wakePhrases = settings.assistantWakePhrase
-      ? [settings.assistantWakePhrase]
-      : DEFAULT_WAKE_PHRASES;
-    const parsed = parseAssistantText(text, { wakePhrases });
-    if (!parsed.wakeDetected) return;
+    const request = this.authorize(text);
+    if (!request) return;
     beforeActionBoundary?.();
 
     let phase: 'planning' | 'action' = 'planning';
     try {
       const mappingRoute = await this.options.mappings.routeVoiceRequest(
-        parsed.postWakeText,
+        request.postWakeText,
         snapshot,
         utteranceId,
       );
       if (mappingRoute.handled) return;
 
       const fallbackPlan = this.options.planning.deterministic(
-        parsed.postWakeText,
-        parsed.intent,
+        request.postWakeText,
+        request.intent,
       );
-      const plan = parsed.intent.kind === 'action' && parsed.intent.action === 'confirm-send'
+      const plan = request.intent.kind === 'action' && request.intent.action === 'confirm-send'
         ? fallbackPlan
         : await this.options.planning.create(
-          parsed.postWakeText,
+          request.postWakeText,
           snapshot,
           signal,
           fallbackPlan,
@@ -86,5 +105,41 @@ export class AssistantFinalTranscriptProcessor {
       }
       throw new AssistantFinalTranscriptError(phase);
     }
+  }
+
+  /**
+   * Wake authority for one finalized utterance. It is granted either by the wake
+   * prefix of this utterance or by a wake-only utterance inside the arming window;
+   * every finalized utterance consumes the window exactly once.
+   */
+  private authorize(text: string): { postWakeText: string; intent: AssistantIntent } | undefined {
+    const settings = this.options.settings.read().values;
+    const wakePhrases = settings.assistantWakePhrase
+      ? [settings.assistantWakePhrase]
+      : DEFAULT_WAKE_PHRASES;
+    const parsed = parseAssistantText(text, { wakePhrases });
+    const armedUntil = this.armedUntil;
+    this.armedUntil = 0;
+
+    if (parsed.wakeDetected) {
+      if (isWakeOnlyUtterance(parsed)) {
+        this.armWake();
+        return undefined;
+      }
+      return { postWakeText: parsed.postWakeText, intent: parsed.intent };
+    }
+    if (armedUntil === 0 || this.now() > armedUntil) return undefined;
+    const command = trimAssistantCommand(text);
+    if (!command) return undefined;
+    return { postWakeText: command, intent: parseAssistantCommand(command) };
+  }
+
+  private armWake(): void {
+    this.armedUntil = this.now() + WAKE_ARM_WINDOW_MS;
+    this.options.feedback.speak(this.options.localize('Yes?', 'כן?'));
+  }
+
+  private now(): number {
+    return this.options.now?.() ?? Date.now();
   }
 }

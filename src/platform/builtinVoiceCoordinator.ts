@@ -1,7 +1,5 @@
-import { createHash } from 'node:crypto';
 import * as vscode from 'vscode';
 
-import type { TargetSnapshot } from '../assistant/context';
 import {
   BUILTIN_COMMAND_CATALOG,
   BuiltinActionController,
@@ -17,6 +15,11 @@ import type { AutoModeAuthorityCache } from '../config';
 import type { BuiltinVoiceIntegration } from '../features/mappings';
 import type { ControlCenterCommandRow } from '../webview/controlCenter/contracts';
 import { filterBuiltinCommands } from './builtinCommandFilter';
+import {
+  acceptsBuiltinConfirmation,
+  allowsBuiltinConfirmationPrompt,
+} from './builtinConfirmationGate';
+import { builtinAuthorityFingerprint } from './promptBinding';
 import { VsCodeBuiltinCommandHost } from './vscodeBuiltinCommandHost';
 import { VsCodeGitHost } from './vscodeGitHost';
 
@@ -166,18 +169,23 @@ export class BuiltinVoiceCoordinator implements BuiltinVoiceIntegration {
       && !(vscode.env.remoteName && definition.availability.remote === false);
   }
 
+  /** Composition and the exclusion of window focus live in the testable binding module. */
   private authorityContextFingerprint(): string {
-    const panelGeneration = this.options.panelGeneration();
-    if (!Number.isSafeInteger(panelGeneration) || panelGeneration < 0) return '';
-    return createHash('sha256').update(JSON.stringify({
-      panelGeneration,
+    return builtinAuthorityFingerprint({
+      panelGeneration: this.options.panelGeneration(),
       workspaceTrusted: vscode.workspace.isTrusted,
-      windowFocused: vscode.window.state.focused,
-    })).digest('hex');
+    });
   }
 
+  /**
+   * The native confirmation is itself the authorizing gesture, so it may be raised while
+   * VS Code is unfocused: background listening exists exactly for that case. The gate and
+   * the post-modal recheck live in the testable module beside the binding helpers.
+   */
   private async confirmNative(definition: BuiltinCommandDefinition): Promise<boolean> {
-    if (!vscode.workspace.isTrusted || !vscode.window.state.focused) return false;
+    if (!allowsBuiltinConfirmationPrompt({ workspaceTrusted: vscode.workspace.isTrusted })) {
+      return false;
+    }
     const panelGeneration = this.options.panelGeneration();
     const confirm = this.options.localize('Run command', 'הפעלת פקודה');
     const selected = await vscode.window.showWarningMessage(
@@ -188,10 +196,12 @@ export class BuiltinVoiceCoordinator implements BuiltinVoiceIntegration {
       { modal: true },
       confirm,
     );
-    return selected === confirm
-      && vscode.workspace.isTrusted
-      && vscode.window.state.focused
-      && panelGeneration === this.options.panelGeneration();
+    return acceptsBuiltinConfirmation({
+      accepted: selected === confirm,
+      workspaceTrusted: vscode.workspace.isTrusted,
+      panelGeneration: this.options.panelGeneration(),
+      capturedPanelGeneration: panelGeneration,
+    });
   }
 
   private async announce(decision: BuiltinActionDecision): Promise<void> {
@@ -215,10 +225,6 @@ export class BuiltinVoiceCoordinator implements BuiltinVoiceIntegration {
     }
     await this.options.publish();
   }
-}
-
-export function targetFingerprint(snapshot: TargetSnapshot): string {
-  return createHash('sha256').update(JSON.stringify(snapshot)).digest('hex');
 }
 
 function slotSummary(definition: BuiltinCommandDefinition): string {

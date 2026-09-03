@@ -62,6 +62,25 @@ async function build() {
     logLevel: 'info',
   });
 
+  // Every synchronous PvRecorder call runs on this worker thread. It sits next to
+  // out/extension.js so its external `./vendor/pvrecorder-node` require resolves
+  // against the same staged native package.
+  const recorderWorker = await esbuild.context({
+    entryPoints: ['src/recorder/worker.entry.ts'],
+    bundle: true,
+    outfile: 'out/recorderWorker.js',
+    platform: 'node',
+    target: 'node18',
+    format: 'cjs',
+    external: ['./vendor/pvrecorder-node'],
+    define: {
+      'process.env.WS_NO_BUFFER_UTIL': '"1"',
+      'process.env.WS_NO_UTF_8_VALIDATE': '"1"',
+    },
+    sourcemap: true,
+    logLevel: 'info',
+  });
+
   const web = await esbuild.context({
     entryPoints: {
       'mic.client': 'src/webview/mic.client.ts',
@@ -77,7 +96,7 @@ async function build() {
     logLevel: 'info',
   });
 
-  ctxs.push(ext, web);
+  ctxs.push(ext, recorderWorker, web);
 
   if (watch) {
     await Promise.all(ctxs.map((c) => c.watch()));
