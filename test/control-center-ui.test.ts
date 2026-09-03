@@ -220,6 +220,7 @@ test('filters, late projections, narrow navigation, and repeatable details prese
 
 test('diagnostics and custom command management use visible bounded fields with no raw JSON wizard', () => {
   const client = readFileSync('src/webview/controlCenter/client.ts', 'utf8');
+  const forms = readFileSync('src/webview/controlCenter/clientForms.ts', 'utf8');
   const diagnostics = readFileSync('src/webview/controlCenter/routes/diagnostics.ts', 'utf8');
   const commands = readFileSync('src/webview/controlCenter/routes/commands.ts', 'utf8');
   assert.match(client, /type: 'diagnosticsIntent'/u);
@@ -228,7 +229,7 @@ test('diagnostics and custom command management use visible bounded fields with 
     'custom-command-label', 'custom-command-description', 'custom-command-phrases',
     'custom-command-kind', 'custom-command-target', 'custom-command-enabled',
   ]) assert.match(commands, new RegExp(field, 'u'));
-  assert.doesNotMatch(`${client}\n${commands}`, /JSON\.parse|raw JSON|window\.prompt\(/iu);
+  assert.doesNotMatch(`${client}\n${forms}\n${commands}`, /JSON\.parse|raw JSON|window\.prompt\(/iu);
 });
 
 test('built-in command enablement is editable in both table and drawer without resetting phrases', () => {
@@ -245,23 +246,28 @@ test('built-in command enablement is editable in both table and drawer without r
 
 test('Assistant and Commands expose host-backed management without browser authority fields', () => {
   const client = readFileSync('src/webview/controlCenter/client.ts', 'utf8');
+  const forms = readFileSync('src/webview/controlCenter/clientForms.ts', 'utf8');
   const overlays = readFileSync('src/webview/controlCenter/clientOverlays.ts', 'utf8');
   const assistant = readFileSync('src/webview/controlCenter/routes/assistant.ts', 'utf8');
   const commands = readFileSync('src/webview/controlCenter/routes/commands.ts', 'utf8');
-  assert.match(client, /type: 'planningProviderIntent'/u);
-  assert.match(client, /type: 'agentManagementIntent'/u);
-  assert.match(client, /type: 'customCommandIntent'/u);
+  assert.match(forms, /type: 'planningProviderIntent'/u);
+  assert.match(forms, /type: 'agentManagementIntent'/u);
+  assert.match(forms, /type: 'customCommandIntent'/u);
   assert.match(overlays, /operation: 'replace-phrases'/u);
   assert.match(overlays, /parsePhraseLines/u);
   assert.match(assistant, /provider-profile-form|agent-profile-form|agent-create-form/u);
   assert.match(commands, /custom-command-form/u);
   assert.match(commands, /edit-custom-command/u);
   assert.match(commands, /delete-custom-command/u);
-  assert.doesNotMatch(`${client}\n${overlays}\n${assistant}\n${commands}`, /receipt|nonce|raw executor|pendingId/iu);
+  assert.doesNotMatch(
+    `${client}\n${forms}\n${overlays}\n${assistant}\n${commands}`,
+    /receipt|nonce|raw executor|pendingId/iu,
+  );
 });
 
 test('selected Soniox always exposes native-only credential, consent, test, and revoke recovery intents', () => {
   const client = readFileSync('src/webview/controlCenter/client.ts', 'utf8');
+  const forms = readFileSync('src/webview/controlCenter/clientForms.ts', 'utf8');
   const assistant = readFileSync('src/webview/controlCenter/routes/assistant.ts', 'utf8');
   for (const request of ['configure-secret', 'request-remote-consent', 'test', 'revoke']) {
     assert.match(client, new RegExp(`'${request}'`, 'u'));
@@ -270,7 +276,7 @@ test('selected Soniox always exposes native-only credential, consent, test, and 
   assert.match(assistant, /remoteProcessing/u);
   assert.match(assistant, /configure-soniox-secret/u);
   assert.match(assistant, /request-soniox-consent/u);
-  assert.doesNotMatch(`${client}\n${assistant}`, /credential\s*:/iu);
+  assert.doesNotMatch(`${client}\n${forms}\n${assistant}`, /credential\s*:/iu);
 });
 
 test('one-overlay controller provides dialog semantics, inert background, Escape, trap, and safe return', () => {
