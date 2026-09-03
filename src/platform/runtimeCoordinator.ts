@@ -34,7 +34,6 @@ import { MicViewProvider } from '../webview/micView';
 import { SettingsViewProvider } from '../webview/settingsView';
 import { VsCodeAssistantActionHost } from './assistantActionHost';
 import { VsCodeAssistantSessionUi } from './assistantSessionUi';
-import { voiceConfirmationArmed } from './builtinConfirmationGate';
 import { BuiltinVoiceCoordinator } from './builtinVoiceCoordinator';
 import {
   VsCodeControlCenterPanelFactory,
@@ -47,8 +46,9 @@ import { controlCenterOperationsPort } from './controlCenterOperationsPort';
 import { ControlCenterSetupChoices } from './controlCenterSetupChoices';
 import { ControlCenterStateCoordinator } from './controlCenterStateCoordinator';
 import { VsCodeCredentialCommandUi } from './credentialCommandUi';
+import { confirmPendingCustomAction } from './customActionConfirmation';
 import { detectToggleRecordingKeybinding } from './keybinding';
-import { autoDispatchTargetFingerprint, promptTargetFingerprint } from './promptBinding';
+import { autoDispatchTargetFingerprint } from './promptBinding';
 import { VsCodeMappingAgentToolHost } from './vscodeMappingAgentToolHost';
 import { VsCodeMappingExecutionHost } from './vscodeMappingExecutionHost';
 import { VsCodeMappingManagementHost } from './vscodeMappingManagementHost';
@@ -471,31 +471,13 @@ export async function activateVoiceInput(context: vscode.ExtensionContext): Prom
 
   async function confirmPending(kind: 'builtin' | 'custom'): Promise<void> {
     if (kind === 'builtin') return mappings.confirmPendingBuiltin();
-    const pending = mappings.pendingAction;
-    if (!pending) return;
-    // The native confirmation is itself the authorizing gesture, so it may be raised while
-    // VS Code is unfocused: background listening exists exactly for that case.
-    if (!vscode.workspace.isTrusted) return;
-    const panelGeneration = control.generation;
-    const requestedTarget = promptTargetFingerprint(target.capture());
-    const confirm = localize('Run action', 'הפעלת פעולה');
-    const openedAt = Date.now();
-    const selected = await vscode.window.showWarningMessage(
-      localize(
-        `Run “${pending.label}” in the current VS Code target?`,
-        `להפעיל את „${pending.label}” ביעד הנוכחי של VS Code?`,
-      ),
-      { modal: true },
-      confirm,
-    );
-    // Focus is not re-checked after the modal (it blurs its own window); an accept faster than the arming delay is a stray keystroke.
-    if (selected === confirm
-      && voiceConfirmationArmed(Date.now() - openedAt)
-      && vscode.workspace.isTrusted
-      && panelGeneration === control.generation
-      && requestedTarget === promptTargetFingerprint(target.capture())
-      && mappings.pendingAction?.id === pending.id) {
-      await mappings.confirmIfPending(pending.id, assistant.nextId('control-center-confirm'));
-    }
+    await confirmPendingCustomAction({
+      pendingAction: () => mappings.pendingAction,
+      confirmIfPending: (id, confirmationId) => mappings.confirmIfPending(id, confirmationId),
+      nextConfirmationId: () => assistant.nextId('control-center-confirm'),
+      panelGeneration: () => control.generation,
+      captureTarget: () => target.capture(),
+      localize,
+    });
   }
 }
