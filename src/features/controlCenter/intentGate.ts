@@ -44,9 +44,11 @@ const INTENT_TIERS: Record<
   micIntent: 'lenient',
   microphoneSetupIntent: 'lenient',
   diagnosticsIntent: 'lenient',
-  // Enable/rate/voice writes are user-visible toggles whose slightly stale view is harmless,
-  // and preview/preview-stop are host-composed local playback.
-  systemTtsIntent: 'lenient',
+  // Enable/rate writes are user-visible toggles whose slightly stale view is harmless, and
+  // preview/preview-stop are host-composed local playback. 'set-voice' writes
+  // assistantSpeechVoiceUri, which selects local vs remote (Soniox) synthesis, so it is
+  // strict below as defence in depth.
+  systemTtsIntent: 'by-operation',
   // 'open' is a read-only detail request; 'reset'/'set-enabled'/'replace-phrases' mutate.
   commandEditIntent: 'by-operation',
   pendingReviewIntent: 'strict',
@@ -64,6 +66,9 @@ export function classifyControlCenterIntent(
   const tier: ControlCenterIntentTier | 'by-operation' | undefined = INTENT_TIERS[message.type];
   if (tier === undefined) return 'strict';
   if (tier !== 'by-operation') return tier;
+  if (message.type === 'systemTtsIntent') {
+    return message.operation === 'set-voice' ? 'strict' : 'lenient';
+  }
   return message.type === 'commandEditIntent' && message.operation === 'open'
     ? 'lenient'
     : 'strict';

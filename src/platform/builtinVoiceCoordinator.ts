@@ -188,6 +188,7 @@ export class BuiltinVoiceCoordinator implements BuiltinVoiceIntegration {
     }
     const panelGeneration = this.options.panelGeneration();
     const confirm = this.options.localize('Run command', 'הפעלת פקודה');
+    const openedAt = Date.now();
     const selected = await vscode.window.showWarningMessage(
       this.options.localize(
         `Run “${definition.label.en}” in the current VS Code target?`,
@@ -198,6 +199,7 @@ export class BuiltinVoiceCoordinator implements BuiltinVoiceIntegration {
     );
     return acceptsBuiltinConfirmation({
       accepted: selected === confirm,
+      elapsedMs: Date.now() - openedAt,
       workspaceTrusted: vscode.workspace.isTrusted,
       panelGeneration: this.options.panelGeneration(),
       capturedPanelGeneration: panelGeneration,
