@@ -343,8 +343,9 @@ export class ControlCenterController implements ControlCenterDisposable {
     };
     if (!this.validOutbound(snapshot)) return;
     this.sentRevision = this.revision;
+    // Recorded only after delivery succeeds, so the lenient window holds delivered revisions.
+    if (await panel.postMessage(snapshot) === false) return;
     this.recentRevisions.record(this.revision);
-    await panel.postMessage(snapshot);
     if (commandProjection && commandPage && commandPage.pageRowCount > 0) {
       for (let offset = 0, chunkIndex = 1; offset < commandProjection.rows.length; offset += 10, chunkIndex += 1) {
         const message: ControlCenterHostMessage = {

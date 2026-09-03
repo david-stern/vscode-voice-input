@@ -34,6 +34,7 @@ import { MicViewProvider } from '../webview/micView';
 import { SettingsViewProvider } from '../webview/settingsView';
 import { VsCodeAssistantActionHost } from './assistantActionHost';
 import { VsCodeAssistantSessionUi } from './assistantSessionUi';
+import { voiceConfirmationArmed } from './builtinConfirmationGate';
 import { BuiltinVoiceCoordinator } from './builtinVoiceCoordinator';
 import {
   VsCodeControlCenterPanelFactory,
@@ -478,6 +479,7 @@ export async function activateVoiceInput(context: vscode.ExtensionContext): Prom
     const panelGeneration = control.generation;
     const requestedTarget = promptTargetFingerprint(target.capture());
     const confirm = localize('Run action', 'הפעלת פעולה');
+    const openedAt = Date.now();
     const selected = await vscode.window.showWarningMessage(
       localize(
         `Run “${pending.label}” in the current VS Code target?`,
@@ -486,8 +488,9 @@ export async function activateVoiceInput(context: vscode.ExtensionContext): Prom
       { modal: true },
       confirm,
     );
-    // Window focus is not re-checked after the modal: the modal blurs its own window.
+    // Focus is not re-checked after the modal (it blurs its own window); an accept faster than the arming delay is a stray keystroke.
     if (selected === confirm
+      && voiceConfirmationArmed(Date.now() - openedAt)
       && vscode.workspace.isTrusted
       && panelGeneration === control.generation
       && requestedTarget === promptTargetFingerprint(target.capture())

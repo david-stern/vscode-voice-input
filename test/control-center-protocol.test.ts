@@ -236,6 +236,8 @@ test('every browser intent family is deliberately classified before the revision
     [{ type: 'systemTtsVoicesObservedIntent', revision: 3, voices: [] }, 'lenient'],
     [{ type: 'systemTtsIntent', revision: 3, operation: 'set-enabled', enabled: true }, 'lenient'],
     [{ type: 'systemTtsIntent', revision: 3, operation: 'set-rate', rate: 1.5 }, 'lenient'],
+    // 'set-voice' selects local vs remote (Soniox) synthesis, so it must see the latest state.
+    [{ type: 'systemTtsIntent', revision: 3, operation: 'set-voice', voiceIndex: 0 }, 'strict'],
     [{ type: 'systemTtsIntent', revision: 3, operation: 'preview' }, 'lenient'],
     [{ type: 'systemTtsIntent', revision: 3, operation: 'preview-stop' }, 'lenient'],
     [{ type: 'diagnosticsIntent', revision: 3, operation: 'run', requestSequence: 1 }, 'lenient'],
