@@ -134,15 +134,6 @@ test('native confirmation paths bind trust before the modal and never re-check f
   }
   assert.deepEqual(offenders, []);
 
-  for (const path of [
-    'src/platform/runtimeCoordinator.ts',
-  ]) {
-    const source = await readFile(resolve(path), 'utf8');
-    const guard = source.indexOf('!vscode.window.state.focused) return');
-    assert.ok(guard >= 0, `${path} must still require a focused window before prompting`);
-    assert.ok(guard < source.indexOf('showWarningMessage('), `${path} guard must precede the modal`);
-  }
-
   // The assistant listens in the background, so a spoken builtin command must be able to
   // raise its confirmation while the user works in another application. Workspace trust
   // still gates that modal, and it is still checked before the modal is raised.
@@ -161,7 +152,7 @@ test('native confirmation paths bind trust before the modal and never re-check f
   for (const [path, reads] of [
     ['src/platform/builtinVoiceCoordinator.ts', 0],
     ['src/platform/builtinConfirmationGate.ts', 0],
-    ['src/platform/runtimeCoordinator.ts', 1],
+    ['src/platform/runtimeCoordinator.ts', 0],
     ['src/platform/voiceAuthorityCoordinator.ts', 1],
     ['src/platform/promptBinding.ts', 0],
   ] as const) {

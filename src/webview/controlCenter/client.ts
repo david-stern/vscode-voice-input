@@ -16,12 +16,7 @@ import {
   focusControlCenterTarget,
   restoreFocusBookmark,
 } from './focus';
-import {
-  isHostChannelVoice,
-  MAX_SYSTEM_VOICE_CHOICES,
-  mergeSystemVoices,
-  sonioxSystemVoices,
-} from './hostVoices';
+import { hostChannelVoices, isHostChannelVoice, isSystemVoiceIndex, mergeSystemVoices } from './hostVoices';
 import { CONTROL_CENTER_STRINGS } from './i18n';
 import {
   openActionPreviewOverlay,
@@ -205,9 +200,7 @@ document.addEventListener('change', (event) => {
       operation: 'set-enabled', enabled: target.value === 'system' });
   } else if (target.dataset.action === 'system-tts-voice') {
     const voiceIndex = Number(target.value);
-    if (Number.isInteger(voiceIndex)
-      && voiceIndex >= -1
-      && voiceIndex <= MAX_SYSTEM_VOICE_CHOICES - 1) post({
+    if (isSystemVoiceIndex(voiceIndex)) post({
       type: 'systemTtsIntent', revision: snapshot.revision, operation: 'set-voice', voiceIndex,
     });
   } else if (target.dataset.action === 'system-tts-rate') {
@@ -357,12 +350,8 @@ function renderCurrent(preferredFocusId?: string): void {
 
 function resourcesWithSpeech(): ControlCenterManagementResources {
   const local = systemSpeech.presentation();
-  // Soniox voices arrive as bare ids and are expanded here exactly as the host expands
-  // them, so both sides index one identical list.
-  const hostVoices = [
-    ...resources.setup?.hostVoices ?? [],
-    ...sonioxSystemVoices(resources.setup?.sonioxVoices ?? [], snapshot?.state.language),
-  ];
+  // Soniox voices arrive as bare ids and expand here exactly as they do host-side.
+  const hostVoices = hostChannelVoices(resources.setup, snapshot?.state.language);
   // The host appends its own voices to the observed ones and indexes the merged list,
   // so the dropdown must render exactly that list for a voice index to mean one voice.
   return {

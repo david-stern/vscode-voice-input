@@ -2,7 +2,7 @@
   "name": "voice-input",
   "displayName": "Voice Input Assistant",
   "description": "Accessible Control Center, compact voice sidebar, opt-in Soniox transcription, editable commands, and OS-dependent system speech.",
-  "version": "2.2.0",
+  "version": "2.3.0",
   "publisher": "david-stern",
   "author": {
     "name": "David Stern"

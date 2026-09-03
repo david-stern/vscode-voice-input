@@ -472,7 +472,9 @@ export async function activateVoiceInput(context: vscode.ExtensionContext): Prom
     if (kind === 'builtin') return mappings.confirmPendingBuiltin();
     const pending = mappings.pendingAction;
     if (!pending) return;
-    if (!vscode.workspace.isTrusted || !vscode.window.state.focused) return;
+    // The native confirmation is itself the authorizing gesture, so it may be raised while
+    // VS Code is unfocused: background listening exists exactly for that case.
+    if (!vscode.workspace.isTrusted) return;
     const panelGeneration = control.generation;
     const requestedTarget = promptTargetFingerprint(target.capture());
     const confirm = localize('Run action', 'הפעלת פעולה');

@@ -1,25 +1,36 @@
+/**
+ * Soniox speech output.
+ *
+ * Speaking sends the reply text to Soniox, so it is a user-initiated remote operation
+ * governed by exactly the same machine/profile-local remote-processing receipt as Soniox
+ * transcription: `authority` is that consent port, and a missing or stale receipt refuses
+ * the utterance *before* any network call. The API key never leaves the `credentials.use`
+ * callback, the text never reaches a command line (audio is piped to the player's stdin),
+ * and neither the text nor the audio is ever written to disk or to the log.
+ */
 import {
-  MAX_SONIOX_TTS_VOICES,
   isSonioxTtsVoice,
   sonioxVoiceId,
   sonioxVoiceUri,
 } from '../webview/controlCenter/hostVoices';
+import {
+  SONIOX_TTS_MODEL,
+  fallbackVoices,
+  parseVoiceRoster,
+  type SonioxTtsVoice,
+} from './sonioxTtsRoster';
 
 export { isSonioxTtsVoice, sonioxVoiceId, sonioxVoiceUri };
+export {
+  SONIOX_TTS_MODEL,
+  SONIOX_TTS_FALLBACK_VOICE_IDS,
+  fallbackVoices,
+  parseVoiceRoster,
+  type SonioxTtsVoice,
+} from './sonioxTtsRoster';
 
-/**
- * Soniox speech output.
- *
- * Speaking sends the reply text to Soniox, so it is governed by exactly the same
- * machine/profile-local remote-processing receipt as Soniox transcription: `authority`
- * is the consent port, and a missing or stale receipt refuses the utterance *before*
- * any network call. The API key never leaves the `credentials.use` callback, the text
- * never reaches a command line (audio is piped to the player's stdin), and neither the
- * text nor the audio is ever written to disk or to the log.
- */
 export const SONIOX_TTS_ENDPOINT = 'https://tts-rt.soniox.com/tts';
 export const SONIOX_TTS_MODELS_ENDPOINT = 'https://api.soniox.com/v1/tts-models';
-export const SONIOX_TTS_MODEL = 'tts-rt-v2';
 export const SONIOX_TTS_SAMPLE_RATE = 24_000;
 export const SONIOX_TTS_AUDIO_FORMAT = 'wav';
 
@@ -47,17 +58,7 @@ export const SONIOX_PLAYBACK_COMMANDS: readonly Readonly<{
   Object.freeze({ command: 'aplay', args: Object.freeze(['-q', '-']) }),
 ]);
 
-/** Used only when the roster request fails; every listed voice speaks every language. */
-export const SONIOX_TTS_FALLBACK_VOICE_IDS: readonly string[] = Object.freeze([
-  'Adrian', 'Maya', 'Daniel', 'Grace', 'Oliver',
-]);
-
 export type SonioxTtsOutcome = 'completed' | 'error' | 'cancelled';
-
-export interface SonioxTtsVoice {
-  readonly id: string;
-  readonly name: string;
-}
 
 export interface SonioxTtsPlayback {
   readonly done: Promise<SonioxTtsOutcome>;
@@ -472,38 +473,6 @@ export function synthesisFailure(status: unknown): string {
   if (status === 413) return 'utterance-too-long';
   if (status === 429) return 'rate-limited';
   return 'unavailable';
-}
-
-export function fallbackVoices(): readonly SonioxTtsVoice[] {
-  return Object.freeze(SONIOX_TTS_FALLBACK_VOICE_IDS.map(
-    (id) => Object.freeze({ id, name: id }),
-  ));
-}
-
-/** Accepts only well-formed ids from the provider roster, bounded and de-duplicated. */
-export function parseVoiceRoster(body: unknown): readonly SonioxTtsVoice[] {
-  const models = readArray(readRecord(body)?.models);
-  const model = models.find((entry) => readRecord(entry)?.id === SONIOX_TTS_MODEL) ?? models[0];
-  const voices: SonioxTtsVoice[] = [];
-  const seen = new Set<string>();
-  for (const entry of readArray(readRecord(model)?.voices)) {
-    const id = readRecord(entry)?.id;
-    if (typeof id !== 'string' || !sonioxVoiceUri(id) || seen.has(id)) continue;
-    seen.add(id);
-    voices.push(Object.freeze({ id, name: id }));
-    if (voices.length >= MAX_SONIOX_TTS_VOICES) break;
-  }
-  return Object.freeze(voices);
-}
-
-function readRecord(value: unknown): Record<string, unknown> | undefined {
-  return typeof value === 'object' && value !== null && !Array.isArray(value)
-    ? value as Record<string, unknown>
-    : undefined;
-}
-
-function readArray(value: unknown): unknown[] {
-  return Array.isArray(value) ? value : [];
 }
 
 async function closeIterator(chunks: AsyncIterator<Uint8Array>): Promise<void> {
