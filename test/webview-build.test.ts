@@ -11,6 +11,7 @@ import test from 'node:test';
 
 const REQUIRED_BUILD_FILES = [
   'out/extension.js',
+  'out/recorderWorker.js',
   'out/webview/mic.client.js',
   'out/webview/settings.client.js',
   'out/webview/settingsLauncher.css',

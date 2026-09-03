@@ -79,15 +79,24 @@ export class TranscriptionMetadataService {
     if (configured && (!this.networkAuthority || authority)) {
       tasks.push(this.credentials.use('soniox', async (apiKey) => {
         if (authority && !await this.networkAuthority!.revalidate(authority)) return;
-        try {
-          [models, languages] = await Promise.all([
-            fetchModels(apiKey),
-            fetchLanguages(),
-          ]);
+        // Models and languages are independent sources with independent failure modes:
+        // the best-effort docs scrape must never be able to hide a successful model
+        // fetch, and a failed model fetch must never drop the language list.
+        const [modelResult, languageResult] = await Promise.allSettled([
+          fetchModels(apiKey),
+          fetchLanguages(),
+        ]);
+        if (modelResult.status === 'fulfilled') {
+          models = modelResult.value;
           this.logger(`models fetched: ${models.length}`);
-        } catch {
+        } else {
           this.logger('models fetch failed: unavailable');
           metadataError = 'models: unavailable';
+        }
+        if (languageResult.status === 'fulfilled') {
+          languages = languageResult.value;
+        } else {
+          this.logger('languages fetch failed: packaged list retained');
         }
       }).then(() => undefined));
     } else {

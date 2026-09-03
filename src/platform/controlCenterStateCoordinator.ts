@@ -29,6 +29,10 @@ import type {
 } from '../webview/controlCenter/contracts';
 import type { CompactMicState } from '../webview/mic/compactContracts';
 import type { BuiltinVoiceCoordinator } from './builtinVoiceCoordinator';
+import {
+  ControlCenterDetachedOperations, compactProviderStatus, nextSequence, refresh, routeState,
+  speechToTextStepState,
+} from './controlCenterCoordinatorSupport';
 import { recommendedSetupStep, type ControlCenterOperations } from './controlCenterOperations';
 import type { ControlCenterSetupChoices } from './controlCenterSetupChoices';
 
@@ -88,12 +92,18 @@ export class ControlCenterStateCoordinator implements ControlCenterStateSource {
   private finalTranscript = '';
   private transcriptSequence = 0;
   private latestCapabilities: ControlCenterCapabilities | undefined;
+  private readonly detached = new ControlCenterDetachedOperations(
+    (message) => this.options.log(message),
+  );
 
   constructor(private readonly options: ControlCenterStateCoordinatorOptions) {}
 
   isKnownCommandId(commandId: string): boolean {
     return this.options.builtins.isKnownCommandId(commandId);
   }
+
+  /** Resolves once every detached native operation started by an intent has settled. */
+  whenIdle(): Promise<void> { return this.detached.whenIdle(); }
 
   async readProjection(display: Readonly<ControlCenterDisplayState>): Promise<ControlCenterProjection> {
     const settings = this.options.settings.read().values;
@@ -226,33 +236,45 @@ export class ControlCenterStateCoordinator implements ControlCenterStateSource {
     message: Intent,
   ): Promise<ControlCenterIntentResult | void> {
     switch (message.type) {
+      // Native prompts, device capture, and diagnostics runs are started detached and answer
+      // with the transitional state immediately: the controller's serialized message queue
+      // must stay free, or the next click queues behind them and is rejected as stale.
       case 'requestAutoEnableIntent':
-        await this.options.enableAuto();
+        this.detached.run('auto-mode', () => this.options.enableAuto());
         return refresh('auto-badge');
       case 'disableAutoIntent':
-        await this.options.disableAuto();
+        this.detached.run('auto-mode', () => this.options.disableAuto());
         return refresh('auto-badge');
       case 'providerSetupIntent':
-        if (message.provider === 'none') await this.options.selectNoProvider();
-        else await this.options.setupSoniox(message.request);
-        if (this.options.settings.read().values.transcriptionProvider === message.provider) {
-          await this.options.setupChoices.recordStt(message.provider);
-        }
+        this.detached.run('provider-setup', async () => {
+          if (message.provider === 'none') await this.options.selectNoProvider();
+          else await this.options.setupSoniox(message.request);
+          if (this.options.settings.read().values.transcriptionProvider === message.provider) {
+            await this.options.setupChoices.recordStt(message.provider);
+          }
+          await this.options.publish();
+        });
         return refresh('provider-card');
       case 'micIntent':
-        await this.options.microphone(message.action);
+        this.detached.run(`mic:${message.action}`, () => this.options.microphone(message.action));
         return refresh('mic-control');
       case 'microphoneSetupIntent':
-        await this.options.operations?.microphone(message);
+        this.detached.run(`microphone:${message.operation}`,
+          () => this.options.operations?.microphone(message));
         return refresh('mic-control');
       case 'systemTtsVoicesObservedIntent':
         this.options.operations?.observeVoices(message.voices);
         return;
       case 'systemTtsIntent':
         await this.options.operations?.systemTts(message);
-        return { refresh: true, focusTarget: { kind: 'route-h1' } };
+        // Preview playback changes no host state: a refresh would rebuild the panel and
+        // pull focus off the preview controls while the utterance is still speaking.
+        return message.operation === 'preview' || message.operation === 'preview-stop'
+          ? undefined
+          : { refresh: true, focusTarget: { kind: 'route-h1' } };
       case 'diagnosticsIntent':
-        await this.options.operations?.diagnostics(message);
+        this.detached.run(`diagnostics:${message.operation}`,
+          () => this.options.operations?.diagnostics(message));
         return { refresh: true, focusTarget: { kind: 'route-h1' } };
       case 'openPendingReviewIntent':
         return refresh('pending-review');
@@ -266,7 +288,9 @@ export class ControlCenterStateCoordinator implements ControlCenterStateSource {
           ? builtinCommandId
           : undefined;
         if (message.decision === 'cancel') this.options.cancelPending();
-        else if (pending) await this.options.confirmPending(pending.kind);
+        // The custom-action confirmation is a native modal: detached like the prompts above.
+        else if (pending) this.detached.run('pending-review',
+          () => this.options.confirmPending(pending.kind));
         return {
           refresh: true,
           focusTarget: pending?.kind === 'builtin' && validBuiltinCommandId
@@ -288,7 +312,11 @@ export class ControlCenterStateCoordinator implements ControlCenterStateSource {
         }
         return { refresh: true, focusTarget: { kind: 'command-row', commandId: message.commandId } };
       case 'planningProviderIntent':
-        await this.options.planningProvider(message);
+        // Credential and connection-test operations cross native input boxes and the network.
+        this.detached.run(`planning:${message.provider}:${message.operation}`, async () => {
+          await this.options.planningProvider(message);
+          await this.options.publish();
+        });
         return refresh('provider-card');
       case 'agentManagementIntent':
         await this.options.agentManagement(message);
@@ -298,7 +326,10 @@ export class ControlCenterStateCoordinator implements ControlCenterStateSource {
           const details = this.customCommandDetails(message.id);
           return details ? { customCommandDetails: details } : undefined;
         }
-        await this.manageCustomCommand(message);
+        // Deleting a custom command asks for a native confirmation, and every accepted
+        // mutation publishes for itself, so this runs detached and keyed per command.
+        this.detached.run(`custom-command:${message.operation}:${'id' in message ? message.id : ''}`,
+          () => this.manageCustomCommand(message));
         return { refresh: true, focusTarget: { kind: 'results-heading' } };
       case 'openOverlayIntent':
       case 'closeOverlayIntent':
@@ -445,46 +476,4 @@ export class ControlCenterStateCoordinator implements ControlCenterStateSource {
       agentEnabled: item.agentEnabled,
     } : undefined;
   }
-}
-
-function speechToTextStepState(
-  provider: 'none' | 'soniox' | 'legacy-soniox-pending',
-  state: ControlCenterCapabilities['sttState'] | undefined,
-  decision: ReturnType<ControlCenterSetupChoices['snapshot']>['stt'],
-): ControlCenterSetupStepState {
-  if (provider === 'none') return decision === 'none' ? 'complete' : 'pending';
-  if (provider !== 'soniox' || decision !== 'soniox') return 'pending';
-  if (state === 'ready') return 'complete';
-  if (state === 'error') return 'attention';
-  return 'pending';
-}
-
-function routeState(
-  route: ControlCenterDisplayState['route'],
-  capabilities: ControlCenterCapabilities,
-): ControlCenterProjection['routeState'] {
-  return route === 'voice' || route === 'assistant' || route === 'home'
-    ? capabilities.sttState === 'ready' ? 'ready' : 'not-configured'
-    : 'ready';
-}
-
-function refresh(trigger: 'auto-badge' | 'provider-card' | 'mic-control' | 'pending-review') {
-  return { refresh: true as const, focusTarget: { kind: 'trigger' as const, trigger } };
-}
-
-function nextSequence(value: number): number {
-  if (value >= Number.MAX_SAFE_INTEGER) return 1;
-  return value + 1;
-}
-
-function compactProviderStatus(
-  capabilities: ControlCenterCapabilities,
-): CompactMicState['providerStatus'] {
-  if (capabilities.sttProvider === 'soniox' && capabilities.sttState === 'ready') {
-    return 'soniox-configured';
-  }
-  if (capabilities.systemTtsState === 'ready'
-    || capabilities.systemTtsState === 'configured-unverified') return 'system-voice';
-  if (capabilities.systemTtsState === 'unavailable') return 'system-voice-unavailable';
-  return 'not-configured';
 }

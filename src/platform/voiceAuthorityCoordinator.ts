@@ -95,6 +95,8 @@ export class VoiceAuthorityCoordinator implements vscode.Disposable {
       this.options.log('transcription provider migration failed safely');
     }
     this.selectedProvider = this.options.settings.read().values.transcriptionProvider;
+    // Window state, active editor, and editor selection are deliberately not observed here:
+    // the native consent modal itself blurs the window and would cancel its own prompt.
     this.subscriptions = [
       this.autoService.onWillChange(() => {
         this.options.onAutoEffective(false);
@@ -103,13 +105,10 @@ export class VoiceAuthorityCoordinator implements vscode.Disposable {
       this.options.credentials.onDidInvalidate((event) => {
         if (event.provider === 'soniox') {
           void this.refreshSonioxCredentialEpoch().then(() => this.options.publish());
-          void this.sonioxConsent.revoke();
+          this.revokeInBackground();
         }
       }),
       this.options.settings.onProviderAuthorityChanged(() => this.settingsChanged()),
-      vscode.window.onDidChangeWindowState(() => this.sonioxConsent.invalidatePendingPrompt()),
-      vscode.window.onDidChangeActiveTextEditor(() => this.sonioxConsent.invalidatePendingPrompt()),
-      vscode.window.onDidChangeTextEditorSelection(() => this.sonioxConsent.invalidatePendingPrompt()),
     ];
     await this.refreshSonioxCredentialEpoch();
     if (!this.options.settings.read().values.autoMode || !vscode.workspace.isTrusted) {
@@ -157,7 +156,7 @@ export class VoiceAuthorityCoordinator implements vscode.Disposable {
         { modal: true },
         confirm,
       ) === confirm,
-    });
+    }, (stage) => this.options.log(`Soniox consent prompt refused: ${stage}`));
     await this.options.publish();
     return granted;
   }
@@ -198,11 +197,21 @@ export class VoiceAuthorityCoordinator implements vscode.Disposable {
     this.autoAuthority.dispose();
   }
 
+  /**
+   * A revoke that never settles must still be visible: the service stays fail-closed, but
+   * the reason belongs in the log. The rejection value is never logged; it may quote storage.
+   */
+  private revokeInBackground(): void {
+    void this.sonioxConsent.revoke().catch(() => {
+      this.options.log('Soniox consent revoke failed: persistence unavailable');
+    });
+  }
+
   private settingsChanged(): void {
     const current = this.options.settings.read().values.transcriptionProvider;
     if (current !== this.selectedProvider) {
       this.selectedProvider = current;
-      void this.sonioxConsent.revoke();
+      this.revokeInBackground();
     }
     if (!this.options.settings.read().values.autoMode && this.coordinatorAutoWrite === 0) {
       void this.autoService.disable();
@@ -216,9 +225,10 @@ export class VoiceAuthorityCoordinator implements vscode.Disposable {
       workspaceTrusted: vscode.workspace.isTrusted,
       consentVersion: AUTO_MODE_CONSENT_VERSION,
       policyFingerprint: AUTO_POLICY_FINGERPRINT,
+      // Window focus is excluded: a native modal blurs the window, so a focus-bound
+      // fingerprint would never match across the prompt it guards.
       targetFingerprint: createHash('sha256').update(JSON.stringify({
         target,
-        focused: vscode.window.state.focused,
         panelGeneration: this.options.panelGeneration(),
         consentVersion: SONIOX_REMOTE_CONSENT_VERSION,
       })).digest('hex'),
@@ -244,10 +254,14 @@ export class VoiceAuthorityCoordinator implements vscode.Disposable {
     }
   }
 
+  /**
+   * The epoch keeps its previous value while a refresh is in flight: blanking it would make
+   * every consent context invalid mid-refresh and refuse prompts silently. Receipts stay
+   * bound to the credential fingerprint, which is re-derived on every capture.
+   */
   private async refreshSonioxCredentialEpoch(): Promise<void> {
     const generation = nextCredentialEpoch(this.sonioxCredentialRefreshGeneration);
     this.sonioxCredentialRefreshGeneration = generation;
-    this.sonioxCredentialEpoch = -1;
     try {
       const revision = await this.options.credentials.persistentRevision('soniox');
       if (generation === this.sonioxCredentialRefreshGeneration) {
@@ -255,6 +269,7 @@ export class VoiceAuthorityCoordinator implements vscode.Disposable {
       }
     } catch {
       if (generation === this.sonioxCredentialRefreshGeneration) {
+        this.sonioxCredentialEpoch = -1;
         this.options.log('Soniox credential epoch unavailable; remote consent remains closed');
       }
     }

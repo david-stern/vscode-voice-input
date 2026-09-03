@@ -16,6 +16,7 @@ import {
   parseControlCenterHostMessage,
   sanitizeControlCenterDisplayState,
 } from '../../webview/controlCenter/protocol';
+import { ControlCenterRevisionWindow, evaluateControlCenterIntent } from './intentGate';
 import type {
   ControlCenterCommandPageProjection,
   ControlCenterControllerOptions,
@@ -64,8 +65,10 @@ export class ControlCenterController implements ControlCenterDisposable {
   private transient: Pick<ControlCenterDeepLink['params'], 'commandId' | 'setupStep'> = {};
   private pendingExplicit: ControlCenterDeepLink | undefined;
   private revision = 0;
+  /** Last revision actually delivered to the panel; a never-sent revision is never accepted. */
   private sentRevision: number | undefined;
-  private acknowledgedRevision: number | undefined;
+  /** Revisions this panel attachment delivered recently; lenient intents may still echo them. */
+  private readonly recentRevisions = new ControlCenterRevisionWindow();
   private browserReady = false;
   private panelGeneration = 0;
   private disposed = false;
@@ -140,6 +143,7 @@ export class ControlCenterController implements ControlCenterDisposable {
     current?.dispose();
     this.pendingExplicit = undefined;
     this.intentSignatures.clear();
+    this.recentRevisions.clear();
   }
   private enqueue(operation: () => Promise<void> | void): Promise<void> {
     this.serial = this.serial.then(operation, operation);
@@ -150,7 +154,7 @@ export class ControlCenterController implements ControlCenterDisposable {
     this.panel = panel;
     this.browserReady = false;
     this.sentRevision = undefined;
-    this.acknowledgedRevision = undefined;
+    this.recentRevisions.clear();
     this.panelGeneration += 1;
     this.panelSubscriptions = [
       panel.onMessage((message) => { void this.enqueue(() => this.handleBrowserMessage(message)); }),
@@ -170,7 +174,7 @@ export class ControlCenterController implements ControlCenterDisposable {
     this.panel = undefined;
     this.browserReady = false;
     this.sentRevision = undefined;
-    this.acknowledgedRevision = undefined;
+    this.recentRevisions.clear();
     this.transient = {};
     this.agentPage = 1;
     this.customCommandPage = 1;
@@ -188,19 +192,27 @@ export class ControlCenterController implements ControlCenterDisposable {
       this.browserReady = true;
       this.agentPage = 1;
       this.customCommandPage = 1;
+      // A reloaded document rendered nothing yet, so no earlier revision stays acceptable.
+      this.recentRevisions.clear();
       await this.publishSnapshot(this.pendingExplicit ? { kind: 'route-h1' } : undefined);
       return;
     }
-    if (message.type === 'ack') {
-      if (message.revision === this.sentRevision && message.revision === this.revision) {
-        this.acknowledgedRevision = message.revision;
-      }
-      return;
-    }
-    if (message.revision !== this.revision
-      || this.sentRevision !== this.revision
-      || this.acknowledgedRevision !== this.revision) {
-      this.source.logRejected?.('browser-message', 'stale-revision');
+    // The render acknowledgement is observational only. An intent echoing the current
+    // revision already proves the webview applied the current snapshot, because the client
+    // learns a revision only by rendering it. Requiring the ack round-trip in addition
+    // rejected every legitimate click made between a publish and its ack.
+    if (message.type === 'ack') return;
+    // Two-tier acceptance: the host republishes on every host-side state change, so demanding
+    // the latest revision dropped clicks that were posted while a snapshot was in flight.
+    // Lenient intents may echo any revision this attachment recently delivered; strict ones
+    // still require the latest, and report a distinct reason when they lose that race.
+    const decision = evaluateControlCenterIntent(message, {
+      currentRevision: this.revision,
+      sentRevision: this.sentRevision,
+      recentRevisions: this.recentRevisions,
+    });
+    if (!decision.accepted) {
+      this.source.logRejected?.('browser-message', decision.reason);
       return;
     }
     const signature = JSON.stringify(message);
@@ -331,7 +343,7 @@ export class ControlCenterController implements ControlCenterDisposable {
     };
     if (!this.validOutbound(snapshot)) return;
     this.sentRevision = this.revision;
-    this.acknowledgedRevision = undefined;
+    this.recentRevisions.record(this.revision);
     await panel.postMessage(snapshot);
     if (commandProjection && commandPage && commandPage.pageRowCount > 0) {
       for (let offset = 0, chunkIndex = 1; offset < commandProjection.rows.length; offset += 10, chunkIndex += 1) {

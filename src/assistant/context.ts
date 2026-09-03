@@ -74,12 +74,22 @@ export function captureTargetSnapshot(probe: TargetProbe, now = Date.now()): Tar
   };
 }
 
+export interface TargetRevalidationOptions {
+  /**
+   * Defaults to true. Only a caller that dispatches through the VS Code API rather than
+   * typing into the focused control may set this to false, and only where a native modal
+   * may have taken focus from the window that requested it. Identity checks are unaffected.
+   */
+  requireFocus?: boolean;
+}
+
 /** Revalidates the state that gives authority to mutate the selected target. */
 export function revalidateTargetSnapshot(
   captured: TargetSnapshot,
   current: TargetSnapshot,
+  options: TargetRevalidationOptions = {},
 ): TargetRevalidation {
-  if (!captured.vscodeFocused || !current.vscodeFocused) {
+  if (options.requireFocus !== false && (!captured.vscodeFocused || !current.vscodeFocused)) {
     return { valid: false, reason: 'vscode-not-focused' };
   }
   if (captured.resolvedTarget === 'unknown' || current.resolvedTarget === 'unknown') {

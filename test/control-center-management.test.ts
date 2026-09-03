@@ -268,6 +268,8 @@ test('coordinator projects bounded management pages and uses current mapping rev
   await coordinator.handleIntent({
     type: 'providerSetupIntent', revision: 1, provider: 'none', request: 'select',
   });
+  // Provider setup crosses native prompts, so it runs detached from the message queue.
+  await coordinator.whenIdle();
   assert.equal(setupSttDecision, 'none');
   assert.deepEqual(coordinator.readSetupState().stepStates, [
     'complete', 'complete', 'complete', 'complete',
@@ -327,5 +329,7 @@ test('coordinator projects bounded management pages and uses current mapping rev
     refresh: true,
     focusTarget: { kind: 'pending-custom-review' },
   });
+  // The builtin confirmation is a detached native modal; cancel stays synchronous.
+  await coordinator.whenIdle();
   assert.deepEqual(pendingDecisions, ['confirm:builtin', 'cancel']);
 });

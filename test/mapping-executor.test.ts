@@ -1,12 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
+import { captureTargetSnapshot, type TargetProbe } from '../src/assistant/context';
 import {
   CustomMappingExecutor,
   type MappingCancellationToken,
   type MappingExecutionHost,
 } from '../src/assistant/mappingExecutor';
 import { mappingFingerprint, type CustomMapping, type JsonValue } from '../src/assistant/mappings';
+import { autoDispatchTargetFingerprint } from '../src/platform/promptBinding';
 
 const command: CustomMapping = {
   id: `vm_${'a'.repeat(22)}`,
@@ -102,6 +104,50 @@ test('nested tool execution forwards Agent token and cancellation but voice has 
     source: 'voice',
     toolInvocationToken: hostToken,
   }), { ok: false, reason: 'invalid-voice-token' });
+});
+
+test('an Auto dispatch recheck survives the request-to-dispatch delay and still binds the target', async () => {
+  // Both fingerprints are computed through the real helpers, exactly as the runtime wires
+  // them: a constant stub here would hide a binding that can never compare equal.
+  const probe: TargetProbe = {
+    requestedTarget: 'here',
+    focusedTarget: 'editor',
+    vscodeFocused: true,
+    activeTabIdentity: 'tab-1',
+    activeEditorIdentity: 'editor-1',
+    activeTerminalIdentity: null,
+  };
+  let clock = 1_000;
+  let live: TargetProbe = probe;
+  const expectedTargetFingerprint = autoDispatchTargetFingerprint(captureTargetSnapshot(probe, clock));
+  const executionHost = host({
+    getTargetFingerprint: () => autoDispatchTargetFingerprint(captureTargetSnapshot(live, clock)),
+  });
+  const executor = new CustomMappingExecutor(() => command, executionHost);
+
+  clock += 4_000;
+  assert.deepEqual(
+    await executor.execute(command.id, { source: 'voice', expectedTargetFingerprint }),
+    { ok: true, mappingId: command.id, kind: 'command' },
+    'an unchanged target must dispatch even though every capture carries a fresh timestamp',
+  );
+  assert.equal(executionHost.calls.commands.length, 1);
+
+  for (const moved of [
+    { ...probe, activeEditorIdentity: 'editor-2' },
+    { ...probe, activeTabIdentity: 'tab-2' },
+    { ...probe, activeTerminalIdentity: 'terminal-1' },
+    { ...probe, vscodeFocused: false },
+  ]) {
+    live = moved;
+    clock += 1_000;
+    assert.deepEqual(
+      await executor.execute(command.id, { source: 'voice', expectedTargetFingerprint }),
+      { ok: false, reason: 'target-changed' },
+      `Auto dispatch must stop when the target moves: ${JSON.stringify(moved)}`,
+    );
+  }
+  assert.equal(executionHost.calls.commands.length, 1, 'no dispatch after the target moved');
 });
 
 test('executor fails closed for trust, cancellation, disabled exposure, stale fingerprint, and disappearance', async () => {

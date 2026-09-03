@@ -8,10 +8,20 @@ import {
   type ControlCenterSetupStepStates,
 } from './contracts';
 import {
+  isHostChannelVoice,
+  isSonioxTtsVoice,
+  MAX_BROWSER_SPEECH_VOICES,
+  MAX_HOST_SPEECH_VOICES,
+  MAX_SONIOX_TTS_VOICES,
+  MAX_SYSTEM_VOICE_CHOICES,
+  sonioxVoiceUri,
+} from './hostVoices';
+import {
   exact,
   isCodePointString,
   isIntegerIn,
   isRevision,
+  optionalExact,
   plainRecord,
 } from './protocolValidation';
 
@@ -55,20 +65,22 @@ export function parseUiHostMessage(
 ): ControlCenterHostMessage | undefined {
   switch (message.type) {
     case 'setupState':
-      return exact(message, [
+      return optionalExact(message, [
         'type', 'revision', 'microphoneState', 'microphoneLabel',
         'systemTtsEnabled', 'systemTtsVoiceIndex', 'systemTtsRate',
         'stepStates', 'recommendedStep',
-      ])
+      ], ['hostVoices', 'sonioxVoices'])
         && isRevision(message.revision)
         && MICROPHONE_STATES.includes(message.microphoneState as typeof MICROPHONE_STATES[number])
         && isCodePointString(message.microphoneLabel, 0, 120)
         && typeof message.systemTtsEnabled === 'boolean'
-        && isIntegerIn(message.systemTtsVoiceIndex, -1, 19)
+        && isIntegerIn(message.systemTtsVoiceIndex, -1, MAX_SYSTEM_VOICE_CHOICES - 1)
         && isSpeechRate(message.systemTtsRate)
         && isSetupStepStates(message.stepStates)
         && isIntegerIn(message.recommendedStep, 1, 4)
         && message.recommendedStep === recommendedSetupStep(message.stepStates)
+        && isHostVoiceList(message.hostVoices)
+        && isSonioxVoiceList(message.sonioxVoices)
         ? message as unknown as Extract<ControlCenterHostMessage, { type: 'setupState' }>
         : undefined;
     case 'diagnosticsState':
@@ -98,9 +110,12 @@ function parseVoiceObservation(
   if (!exact(message, ['type', 'revision', 'voices'])
     || !isRevision(message.revision)
     || !Array.isArray(message.voices)
-    || message.voices.length > 20) return undefined;
+    || message.voices.length > MAX_BROWSER_SPEECH_VOICES) return undefined;
   const voices = message.voices.map(parseObservedVoice);
-  if (voices.some((voice) => !voice)) return undefined;
+  // Host-channel identities are appended host-side only; a browser observation claiming
+  // one could route speech to an unavailable synthesizer or to a remote provider whose
+  // key and consent receipt the browser never holds.
+  if (voices.some((voice) => !voice || isHostChannelVoice(voice.voiceUri))) return undefined;
   const identifiers = voices.map((voice) => voice?.voiceUri);
   if (new Set(identifiers).size !== identifiers.length) return undefined;
   return {
@@ -108,6 +123,29 @@ function parseVoiceObservation(
     revision: message.revision,
     voices: voices as ControlCenterObservedSystemVoice[],
   };
+}
+
+function isHostVoiceList(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_HOST_SPEECH_VOICES) {
+    return false;
+  }
+  const voices = value.map(parseObservedVoice);
+  // Only host-channel identities may travel on this field: the browser renders them but
+  // the host plays them, so an arbitrary URI here would be an unplayable dropdown entry.
+  if (voices.some((voice) => !voice || !isHostChannelVoice(voice.voiceUri))) return false;
+  const identifiers = voices.map((voice) => voice?.voiceUri);
+  return new Set(identifiers).size === identifiers.length;
+}
+
+/** Bare provider voice ids only: anything else could not be expanded into a voice URI. */
+function isSonioxVoiceList(value: unknown): boolean {
+  if (value === undefined) return true;
+  if (!Array.isArray(value) || value.length === 0 || value.length > MAX_SONIOX_TTS_VOICES) {
+    return false;
+  }
+  if (value.some((voiceId) => !isSonioxTtsVoice(sonioxVoiceUri(voiceId)))) return false;
+  return new Set(value).size === value.length;
 }
 
 function parseObservedVoice(value: unknown): ControlCenterObservedSystemVoice | undefined {
@@ -134,7 +172,12 @@ function parseSystemTtsIntent(
   }
   if (message.operation === 'set-voice') {
     return exact(message, ['type', 'revision', 'operation', 'voiceIndex'])
-      && isIntegerIn(message.voiceIndex, -1, 19)
+      && isIntegerIn(message.voiceIndex, -1, MAX_SYSTEM_VOICE_CHOICES - 1)
+      ? message as unknown as Extract<ControlCenterBrowserMessage, { type: 'systemTtsIntent' }>
+      : undefined;
+  }
+  if (message.operation === 'preview' || message.operation === 'preview-stop') {
+    return exact(message, ['type', 'revision', 'operation'])
       ? message as unknown as Extract<ControlCenterBrowserMessage, { type: 'systemTtsIntent' }>
       : undefined;
   }

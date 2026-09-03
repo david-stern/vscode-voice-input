@@ -1,47 +1,47 @@
-import { createHash, createHmac, randomBytes, timingSafeEqual } from 'node:crypto';
+import { randomBytes } from 'node:crypto';
 
-import type { TranscriptionProviderSelection } from '../speech/contracts';
 import type { GlobalStatePort } from './consent';
 import { SONIOX_SECRET_KEY } from './contracts';
 import type { SecretStoragePort } from './credentials';
+import {
+  SONIOX_CONSENT_PROMPT_TTL_MS,
+  SONIOX_ENDPOINT_POLICY_VERSION,
+  SONIOX_REMOTE_CONSENT_RECEIPT_KEY,
+  SONIOX_REMOTE_CONSENT_SCHEMA_VERSION,
+  SONIOX_REMOTE_CONSENT_SECRET_KEY,
+  SONIOX_REMOTE_CONSENT_VERSION,
+  credentialTag,
+  exactAuthority,
+  nextEpoch,
+  normalizeCredential,
+  parseAuthority,
+  parseReceipt,
+  parseSecret,
+  profileHash,
+  promptFreshAt,
+  promptStillCurrent,
+  receiptFingerprint,
+  receiptMatches,
+  receiptTag,
+  safeContext,
+  safeEpoch,
+  type ConsentSecret,
+  type PendingConsent,
+  type SonioxConnectionAuthoritySnapshot,
+  type SonioxConsentContext,
+  type SonioxRemoteConsentReceipt,
+} from './sonioxConsentReceipt';
 
-export const SONIOX_REMOTE_CONSENT_RECEIPT_KEY = 'voiceInput.sonioxRemoteConsent.v1';
-export const SONIOX_REMOTE_CONSENT_SECRET_KEY = 'voiceInput.sonioxRemoteConsentInstallation.v1';
-export const SONIOX_REMOTE_CONSENT_VERSION = 1;
-export const SONIOX_ENDPOINT_POLICY_VERSION = 1;
-export const SONIOX_REMOTE_CONSENT_SCHEMA_VERSION = 1 as const;
-export const SONIOX_CONSENT_PROMPT_TTL_MS = 120_000;
-
-interface ConsentSecret { nonce: string; epoch: number }
-
-interface SonioxRemoteConsentReceipt {
-  schemaVersion: typeof SONIOX_REMOTE_CONSENT_SCHEMA_VERSION;
-  provider: 'soniox';
-  epoch: number;
-  consentVersion: number;
-  endpointPolicyVersion: number;
-  credentialRevision: number;
-  credentialFingerprint: string;
-  profileHash: string;
-  grantedAt: number;
-  authTag: string;
-}
-
-export interface SonioxConsentContext {
-  selection: TranscriptionProviderSelection;
-  profileIdentity: string;
-  credentialRevision: number;
-  focused: boolean;
-  panelGeneration: number;
-}
-
-export interface SonioxConnectionAuthoritySnapshot {
-  readonly provider: 'soniox';
-  readonly epoch: number;
-  readonly credentialRevision: number;
-  readonly profileHash: string;
-  readonly fingerprint: string;
-}
+export {
+  SONIOX_CONSENT_PROMPT_TTL_MS,
+  SONIOX_ENDPOINT_POLICY_VERSION,
+  SONIOX_REMOTE_CONSENT_RECEIPT_KEY,
+  SONIOX_REMOTE_CONSENT_SCHEMA_VERSION,
+  SONIOX_REMOTE_CONSENT_SECRET_KEY,
+  SONIOX_REMOTE_CONSENT_VERSION,
+  type SonioxConnectionAuthoritySnapshot,
+  type SonioxConsentContext,
+} from './sonioxConsentReceipt';
 
 export interface SonioxConsentPromptHost {
   confirmRemoteProcessing(): PromiseLike<boolean>;
@@ -49,27 +49,17 @@ export interface SonioxConsentPromptHost {
 
 export interface SonioxConsentDisposable { dispose(): void }
 
-interface PendingConsent {
-  requestId: string;
-  secretEpoch: number;
-  invalidationGeneration: number;
-  profileHash: string;
-  credentialRevision: number;
-  credentialFingerprint: string;
-  panelGeneration: number;
-  expiresAt: number;
-}
-
 /** Machine/profile-local remote-audio consent. Receipts and prompt bindings never leave the host. */
 export class SonioxRemoteConsentService {
   private pending: PendingConsent | undefined;
   private invalidationGeneration = 0;
-  private forcedInvalid = false;
+  private pendingCloses = 0;
+  /** A revoke whose persistence failed must never fail open into the previous receipt. */
+  private closedByFailedRevoke = false;
   private tail = Promise.resolve();
   private readonly listeners = new Set<() => void>();
   private readonly storageSubscription: SonioxConsentDisposable | undefined;
-  private readonly observesSecretChanges: boolean;
-  private localConsentSecretWrite: { events: number } | undefined;
+  private lastLocalSecretValue: string | undefined;
   private disposed = false;
 
   constructor(
@@ -84,22 +74,19 @@ export class SonioxRemoteConsentService {
       if (this.disposed) return;
       let key: unknown;
       try { key = event?.key; } catch {
-        this.announceInvalidation();
+        this.invalidateAuthority();
         return;
       }
       if (key === SONIOX_SECRET_KEY) {
-        this.announceInvalidation();
+        // Credential rotation closes authority at once; receipts stay fingerprint-bound.
+        this.invalidateAuthority();
         return;
       }
       if (key !== SONIOX_REMOTE_CONSENT_SECRET_KEY) return;
-      const localWrite = this.localConsentSecretWrite;
-      if (localWrite) {
-        localWrite.events += 1;
-        if (localWrite.events === 1) return;
-      }
-      this.announceInvalidation();
+      // The host delivers SecretStorage events asynchronously, so neither event order nor
+      // event count identifies a self-write. Compare the stored value instead.
+      void this.reconcileConsentSecret();
     });
-    this.observesSecretChanges = this.storageSubscription !== undefined;
   }
 
   onDidInvalidate(listener: () => void): SonioxConsentDisposable {
@@ -109,10 +96,10 @@ export class SonioxRemoteConsentService {
   }
 
   async capture(): Promise<SonioxConnectionAuthoritySnapshot | undefined> {
-    if (this.disposed) return undefined;
+    if (this.disposed || this.pendingCloses > 0 || this.closedByFailedRevoke) return undefined;
     const captureGeneration = this.invalidationGeneration;
     const context = safeContext(this.context());
-    if (!context || context.selection !== 'soniox' || this.forcedInvalid) return undefined;
+    if (!context || context.selection !== 'soniox') return undefined;
     const receipt = parseReceipt(this.state.get<unknown>(SONIOX_REMOTE_CONSENT_RECEIPT_KEY, undefined));
     if (!receipt) return undefined;
     const secret = await this.installationSecret();
@@ -120,7 +107,7 @@ export class SonioxRemoteConsentService {
     const credentialFingerprint = await this.credentialFingerprint(secret.nonce);
     if (
       !this.generationCurrent(captureGeneration)
-      || this.forcedInvalid
+      || this.pendingCloses > 0 || this.closedByFailedRevoke
       || !credentialFingerprint
       || !receiptMatches(receipt, secret, context, credentialFingerprint)
     ) return undefined;
@@ -196,7 +183,9 @@ export class SonioxRemoteConsentService {
         || !promptStillCurrent(pending, commitContext, this.invalidationGeneration)) return false;
       const grantedAt = this.now();
       if (!promptFreshAt(pending, grantedAt)) return false;
-      const commitGeneration = this.announceInvalidation();
+      // Only real invalidations (revoke, credential change, external tamper) may abort the
+      // commit, so the commit observes the generation instead of bumping it.
+      const commitGeneration = this.invalidationGeneration;
       const nextSecret = { nonce: secret.nonce, epoch: nextEpoch(secret.epoch) };
       const unsigned: Omit<SonioxRemoteConsentReceipt, 'authTag'> = {
         schemaVersion: SONIOX_REMOTE_CONSENT_SCHEMA_VERSION,
@@ -233,19 +222,35 @@ export class SonioxRemoteConsentService {
         await this.state.update(SONIOX_REMOTE_CONSENT_RECEIPT_KEY, undefined);
         return false;
       }
-      this.forcedInvalid = false;
+      // A committed grant supersedes a failed close: this receipt is freshly signed against
+      // the current secret epoch and credential fingerprint.
+      this.closedByFailedRevoke = false;
+      // Listeners are an invalidation channel only: they cancel live transcription, final,
+      // and probe work. A grant precedes any authorized session, so it announces nothing.
       return true;
     });
   }
 
   /** Synchronously closes readiness; persistence is ordered behind any prompt completion. */
   revoke(): Promise<void> {
-    this.announceInvalidation();
+    this.pendingCloses += 1;
+    this.invalidateAuthority();
     return this.serialize(async () => {
-      const secret = await this.installationSecret();
-      const nextSecret = { nonce: secret.nonce, epoch: nextEpoch(secret.epoch) };
-      await this.storeConsentSecret(nextSecret);
-      await this.state.update(SONIOX_REMOTE_CONSENT_RECEIPT_KEY, undefined);
+      try {
+        // The receipt is dropped first: a failure while rotating the installation secret
+        // must never leave a readable receipt behind for the next host to load.
+        await this.state.update(SONIOX_REMOTE_CONSENT_RECEIPT_KEY, undefined);
+        const secret = await this.installationSecret();
+        const nextSecret = { nonce: secret.nonce, epoch: nextEpoch(secret.epoch) };
+        await this.storeConsentSecret(nextSecret);
+        this.closedByFailedRevoke = false;
+      } catch (error) {
+        // The receipt may still be readable, so stay closed until a close or grant succeeds.
+        this.closedByFailedRevoke = true;
+        throw error;
+      } finally {
+        this.pendingCloses -= 1;
+      }
     });
   }
 
@@ -257,24 +262,33 @@ export class SonioxRemoteConsentService {
   dispose(): void {
     if (this.disposed) return;
     this.disposed = true;
-    this.pending = undefined;
-    this.invalidationGeneration = nextEpoch(this.invalidationGeneration);
-    this.forcedInvalid = true;
     this.storageSubscription?.dispose();
-    for (const listener of [...this.listeners]) {
-      try { listener(); } catch { /* Authority remains invalid. */ }
-    }
+    this.invalidateAuthority();
     this.listeners.clear();
   }
 
-  private announceInvalidation(): number {
+  /** Clears the pending prompt, closes the generation, notifies observers, never sticks. */
+  private invalidateAuthority(): number {
     this.pending = undefined;
     this.invalidationGeneration = nextEpoch(this.invalidationGeneration);
-    this.forcedInvalid = true;
     for (const listener of [...this.listeners]) {
       try { listener(); } catch { /* Authority remains invalid. */ }
     }
     return this.invalidationGeneration;
+  }
+
+  /** A stored value this service never wrote is an external mutation: fail closed. */
+  private async reconcileConsentSecret(): Promise<void> {
+    try {
+      const current = await this.secrets.get(SONIOX_REMOTE_CONSENT_SECRET_KEY);
+      if (!this.disposed && current !== this.lastLocalSecretValue) this.handleExternalMutation();
+    } catch {
+      if (!this.disposed) this.handleExternalMutation();
+    }
+  }
+
+  private handleExternalMutation(): void {
+    this.invalidateAuthority();
   }
 
   private async installationSecret(): Promise<ConsentSecret> {
@@ -283,33 +297,24 @@ export class SonioxRemoteConsentService {
     if (parsed) return parsed;
     const created = { nonce: this.nonceFactory(), epoch: 0 };
     if (!/^[A-Za-z0-9_-]{32,128}$/u.test(created.nonce)) throw new TypeError('invalid nonce source');
-    await this.secrets.store(SONIOX_REMOTE_CONSENT_SECRET_KEY, JSON.stringify(created));
+    const json = JSON.stringify(created);
+    this.lastLocalSecretValue = json;
+    await this.secrets.store(SONIOX_REMOTE_CONSENT_SECRET_KEY, json);
     return created;
   }
 
   private async credentialFingerprint(nonce: string): Promise<string | undefined> {
     const credential = normalizeCredential(await this.secrets.get(SONIOX_SECRET_KEY));
-    return credential
-      ? createHmac('sha256', nonce)
-        .update(`voice-input-soniox-credential:${credential}`)
-        .digest('hex')
-      : undefined;
+    return credential ? credentialTag(credential, nonce) : undefined;
   }
 
+  /** Claims the value this service owns, writes it, and confirms the write by read-back. */
   private async storeConsentSecret(secret: ConsentSecret): Promise<boolean> {
-    if (!this.observesSecretChanges) {
-      await this.secrets.store(SONIOX_REMOTE_CONSENT_SECRET_KEY, JSON.stringify(secret));
-      return true;
-    }
-    if (this.localConsentSecretWrite) return false;
-    const observation = { events: 0 };
-    this.localConsentSecretWrite = observation;
-    try {
-      await this.secrets.store(SONIOX_REMOTE_CONSENT_SECRET_KEY, JSON.stringify(secret));
-      return observation.events === 1;
-    } finally {
-      if (this.localConsentSecretWrite === observation) this.localConsentSecretWrite = undefined;
-    }
+    const json = JSON.stringify(secret);
+    this.lastLocalSecretValue = json;
+    await this.secrets.store(SONIOX_REMOTE_CONSENT_SECRET_KEY, json);
+    const readBack = await this.secrets.get(SONIOX_REMOTE_CONSENT_SECRET_KEY);
+    return readBack === json;
   }
 
   private promptFresh(pending: PendingConsent): boolean {
@@ -327,163 +332,19 @@ export class SonioxRemoteConsentService {
   }
 }
 
+/** `onRefused` names the stage that refused so hosts can log it; it carries no receipt data. */
 export async function requestSonioxConsentWithNativePrompt(
   service: SonioxRemoteConsentService,
   prompt: SonioxConsentPromptHost,
+  onRefused?: (stage: 'begin' | 'declined' | 'complete') => void,
 ): Promise<boolean> {
   const requestId = await service.beginPrompt();
-  if (!requestId) return false;
+  if (!requestId) {
+    onRefused?.('begin');
+    return false;
+  }
   const confirmed = await prompt.confirmRemoteProcessing();
-  return service.completePrompt(requestId, confirmed);
-}
-
-function receiptMatches(
-  receipt: SonioxRemoteConsentReceipt,
-  secret: ConsentSecret,
-  context: SonioxConsentContext,
-  credentialFingerprint: string,
-): boolean {
-  return receipt.epoch === secret.epoch
-    && receipt.consentVersion === SONIOX_REMOTE_CONSENT_VERSION
-    && receipt.endpointPolicyVersion === SONIOX_ENDPOINT_POLICY_VERSION
-    && receipt.credentialRevision === context.credentialRevision
-    && receipt.credentialFingerprint === credentialFingerprint
-    && receipt.profileHash === profileHash(context.profileIdentity)
-    && validTag(receipt, secret.nonce);
-}
-
-function promptStillCurrent(
-  pending: PendingConsent,
-  context: SonioxConsentContext,
-  generation: number,
-): boolean {
-  return context.selection === 'soniox'
-    && context.focused
-    && pending.invalidationGeneration === generation
-    && pending.profileHash === profileHash(context.profileIdentity)
-    && pending.credentialRevision === context.credentialRevision
-    && pending.panelGeneration === context.panelGeneration;
-}
-
-function promptFreshAt(pending: PendingConsent, now: number): boolean {
-  return safeEpoch(now) && now < pending.expiresAt;
-}
-
-function safeContext(value: SonioxConsentContext): SonioxConsentContext | undefined {
-  return value
-    && (value.selection === 'none' || value.selection === 'soniox' || value.selection === 'legacy-soniox-pending')
-    && typeof value.profileIdentity === 'string'
-    && value.profileIdentity.length > 0
-    && value.profileIdentity.length <= 2_048
-    && safeEpoch(value.credentialRevision)
-    && typeof value.focused === 'boolean'
-    && safeEpoch(value.panelGeneration)
-    ? value
-    : undefined;
-}
-
-function parseReceipt(value: unknown): SonioxRemoteConsentReceipt | undefined {
-  if (!plain(value)) return undefined;
-  const keys = [
-    'authTag', 'consentVersion', 'credentialFingerprint', 'credentialRevision',
-    'endpointPolicyVersion', 'epoch', 'grantedAt', 'profileHash', 'provider', 'schemaVersion',
-  ];
-  if (Object.keys(value).sort().join(',') !== keys.sort().join(',')) return undefined;
-  if (
-    value.schemaVersion !== SONIOX_REMOTE_CONSENT_SCHEMA_VERSION
-    || value.provider !== 'soniox'
-    || !safeEpoch(value.epoch)
-    || !safeEpoch(value.consentVersion)
-    || !safeEpoch(value.endpointPolicyVersion)
-    || !safeEpoch(value.credentialRevision)
-    || !safeEpoch(value.grantedAt)
-    || !hex(value.credentialFingerprint)
-    || !hex(value.profileHash)
-    || !hex(value.authTag)
-  ) return undefined;
-  return value as unknown as SonioxRemoteConsentReceipt;
-}
-
-function parseSecret(value: string | undefined): ConsentSecret | undefined {
-  if (!value || value.length > 512) return undefined;
-  try {
-    const parsed: unknown = JSON.parse(value);
-    if (!plain(parsed) || Object.keys(parsed).sort().join(',') !== 'epoch,nonce') return undefined;
-    if (!safeEpoch(parsed.epoch) || typeof parsed.nonce !== 'string' || !/^[A-Za-z0-9_-]{32,128}$/u.test(parsed.nonce)) {
-      return undefined;
-    }
-    return { nonce: parsed.nonce, epoch: parsed.epoch };
-  } catch {
-    return undefined;
-  }
-}
-
-function parseAuthority(value: Readonly<object>): SonioxConnectionAuthoritySnapshot | undefined {
-  if (!plain(value) || Object.keys(value).sort().join(',') !== 'credentialRevision,epoch,fingerprint,profileHash,provider') {
-    return undefined;
-  }
-  if (
-    value.provider !== 'soniox'
-    || !safeEpoch(value.epoch)
-    || !safeEpoch(value.credentialRevision)
-    || !hex(value.profileHash)
-    || !hex(value.fingerprint)
-  ) return undefined;
-  return value as unknown as SonioxConnectionAuthoritySnapshot;
-}
-
-function exactAuthority(a: SonioxConnectionAuthoritySnapshot, b: SonioxConnectionAuthoritySnapshot): boolean {
-  return a.provider === b.provider
-    && a.epoch === b.epoch
-    && a.credentialRevision === b.credentialRevision
-    && a.profileHash === b.profileHash
-    && a.fingerprint === b.fingerprint;
-}
-
-function validTag(receipt: SonioxRemoteConsentReceipt, nonce: string): boolean {
-  const { authTag, ...unsigned } = receipt;
-  const expected = Buffer.from(receiptTag(unsigned, nonce), 'hex');
-  const actual = Buffer.from(authTag, 'hex');
-  return actual.length === expected.length && timingSafeEqual(actual, expected);
-}
-
-function receiptTag(value: Omit<SonioxRemoteConsentReceipt, 'authTag'>, nonce: string): string {
-  return createHmac('sha256', nonce).update(JSON.stringify(value)).digest('hex');
-}
-
-function receiptFingerprint(receipt: SonioxRemoteConsentReceipt): string {
-  return createHash('sha256').update(JSON.stringify(receipt)).digest('hex');
-}
-
-function profileHash(identity: string): string {
-  return createHash('sha256').update(`voice-input-soniox-profile:${identity}`).digest('hex');
-}
-
-function normalizeCredential(value: string | undefined): string | undefined {
-  if (typeof value !== 'string') return undefined;
-  const normalized = value.trim();
-  return normalized
-    && normalized.length <= 4_096
-    && !/[\r\n\u0000]/u.test(normalized)
-    ? normalized
-    : undefined;
-}
-
-function nextEpoch(value: number): number {
-  if (!safeEpoch(value) || value >= Number.MAX_SAFE_INTEGER) throw new RangeError('consent epoch exhausted');
-  return value + 1;
-}
-
-function safeEpoch(value: unknown): value is number {
-  return Number.isSafeInteger(value) && Number(value) >= 0;
-}
-
-function hex(value: unknown): value is string {
-  return typeof value === 'string' && /^[a-f0-9]{64}$/u.test(value);
-}
-
-function plain(value: unknown): value is Record<string, unknown> {
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return false;
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
+  const granted = await service.completePrompt(requestId, confirmed);
+  if (!granted) onRefused?.(confirmed ? 'complete' : 'declined');
+  return granted;
 }

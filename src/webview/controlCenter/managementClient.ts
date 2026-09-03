@@ -76,3 +76,26 @@ export function postAgentAction(
     type: 'agentManagementIntent', revision, operation: 'delete', id,
   });
 }
+
+export function postCustomCommandAction(
+  action: string | undefined,
+  target: HTMLElement,
+  revision: number,
+  post: PostMessage,
+  /** Marks the pending details request in the client and answers its sequence number. */
+  openDetails: (id: string) => number,
+): void {
+  const id = target.closest<HTMLElement>('[data-custom-command-id]')?.dataset.customCommandId;
+  if (!id) return;
+  if (action === 'toggle-custom-command') post({
+    type: 'customCommandIntent', revision,
+    operation: 'set-enabled', id, enabled: target.dataset.enabled === 'true',
+  });
+  else if (action === 'edit-custom-command') post({
+    type: 'customCommandIntent', revision,
+    operation: 'open', id, requestSequence: openDetails(id),
+  });
+  else if (action === 'delete-custom-command') post({
+    type: 'customCommandIntent', revision, operation: 'delete', id,
+  });
+}

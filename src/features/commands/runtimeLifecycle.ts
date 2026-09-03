@@ -59,11 +59,21 @@ export class HostRuntimeLifecycle {
     }
     if (resume && resumeRequested) {
       const deviceCount = await deviceScan;
-      if (!this.resumeReady(resume, deviceCount)) return;
-      if (!await this.credentialReady(resume)) return;
-      if (!this.resumeReady(resume, deviceCount)) return;
-      if (!await this.credentialReady(resume)) return;
-      if (!this.resumeReady(resume, deviceCount)) return;
+      // Each gate is rechecked after every await, and the first missing one is named once
+      // so a silent startup resume is diagnosable without leaking any credential state.
+      for (const gate of [
+        () => this.resumeGate(resume, deviceCount),
+        async () => await this.credentialGate(resume),
+        () => this.resumeGate(resume, deviceCount),
+        async () => await this.credentialGate(resume),
+        () => this.resumeGate(resume, deviceCount),
+      ]) {
+        const missing = await gate();
+        if (missing) {
+          this.options.log(`assistant startup resume skipped: ${missing}`);
+          return;
+        }
+      }
       try {
         await resume.start();
       } catch {
@@ -91,34 +101,43 @@ export class HostRuntimeLifecycle {
     this.options.mappings.dispose();
   }
 
-  private resumeReady(
+  /** Returns the name of the first unmet resume precondition, or undefined when ready. */
+  private resumeGate(
     resume: NonNullable<HostRuntimeLifecycleOptions['startupResume']>,
     deviceCount: number | undefined,
-  ): boolean {
+  ): string | undefined {
     try {
+      if (this.disposed) return 'resumeReady/host-disposed';
+      if (!resume.settings.read().values.assistantResumeOnStartup) {
+        return 'resumeReady/setting-disabled';
+      }
+      if (!resume.workspaceTrusted()) return 'resumeReady/workspace-untrusted';
+      if (!resume.consents.status('assistant-listening').acknowledged) {
+        return 'resumeReady/listening-consent';
+      }
+      if (typeof deviceCount !== 'number' || deviceCount <= 0) {
+        return 'resumeReady/no-microphone';
+      }
       const selectionKind = resume.devices.selectionStatus?.kind;
-      return !this.disposed
-        && resume.settings.read().values.assistantResumeOnStartup
-        && resume.workspaceTrusted()
-        && resume.consents.status('assistant-listening').acknowledged
-        && typeof deviceCount === 'number'
-        && deviceCount > 0
-        && selectionKind !== undefined
-        && selectionKind !== 'stale'
-        && selectionKind !== 'legacy-ambiguous';
+      if (selectionKind === undefined) return 'resumeReady/device-selection-unknown';
+      if (selectionKind === 'stale' || selectionKind === 'legacy-ambiguous') {
+        return `resumeReady/device-selection-${selectionKind}`;
+      }
+      return undefined;
     } catch {
-      return false;
+      return 'resumeReady/unavailable';
     }
   }
 
-  private async credentialReady(
+  private async credentialGate(
     resume: NonNullable<HostRuntimeLifecycleOptions['startupResume']>,
-  ): Promise<boolean> {
+  ): Promise<string | undefined> {
     try {
-      return (await resume.credentials.status('soniox')).configured;
+      return (await resume.credentials.status('soniox')).configured
+        ? undefined
+        : 'credentialReady/soniox-not-configured';
     } catch {
-      this.options.log('assistant startup resume check failed safely: credential unavailable');
-      return false;
+      return 'credentialReady/unavailable';
     }
   }
 }

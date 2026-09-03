@@ -4,7 +4,10 @@ html, body { min-width: 0; margin: 0; overflow-x: hidden; }
 body { color: var(--vscode-foreground); background: var(--vscode-sideBar-background); font: var(--vscode-font-size, 13px)/1.5 var(--vscode-font-family); }
 #settings-launcher-main { display: grid; gap: 12px; padding: 12px; }
 h1, p { margin: 0; overflow-wrap: anywhere; }
-button { min-width: 44px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--vscode-button-border, transparent); color: var(--vscode-button-foreground); background: var(--vscode-button-background); font: inherit; }
-button:hover { background: var(--vscode-button-hoverBackground); }
+h1 { display: inline-flex; align-items: center; gap: 8px; letter-spacing: -0.01em; }
+h1::before { content: ""; flex: none; width: 0.6em; height: 0.6em; border-radius: 999px; background: linear-gradient(135deg, var(--vscode-charts-blue, var(--vscode-focusBorder)), var(--vscode-charts-purple, var(--vscode-focusBorder))); }
+button { min-width: 44px; min-height: 44px; padding: 8px 12px; border: 1px solid var(--vscode-button-border, transparent); border-radius: 6px; color: var(--vscode-button-foreground); background: var(--vscode-button-background); font: inherit; font-weight: 500; cursor: pointer; transition: background 160ms ease, box-shadow 160ms ease; }
+button:hover { background: var(--vscode-button-hoverBackground); box-shadow: 0 2px 8px var(--vscode-widget-shadow, transparent); }
 button:focus-visible { outline: 2px solid var(--vscode-focusBorder, var(--vscode-contrastActiveBorder)); outline-offset: 2px; }
+@media (forced-colors: active) { button { border-color: ButtonText; } h1::before { background: CanvasText; } }
 @media (prefers-reduced-motion: reduce) { * { animation: none !important; transition: none !important; } }

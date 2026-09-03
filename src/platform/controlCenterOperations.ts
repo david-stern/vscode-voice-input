@@ -10,6 +10,11 @@ import type {
   ControlCenterSetupStepState,
   ControlCenterSetupStepStates,
 } from '../webview/controlCenter/contracts';
+import {
+  isSonioxTtsVoice,
+  mergeSystemVoices,
+  sonioxSystemVoices,
+} from '../webview/controlCenter/hostVoices';
 import type { NativeLocalize } from './nativeLocalization';
 import type { ControlCenterSetupChoices } from './controlCenterSetupChoices';
 
@@ -20,8 +25,30 @@ type MicrophoneIntent = Extract<ControlCenterBrowserMessage, { type: 'microphone
 type SystemTtsIntent = Extract<ControlCenterBrowserMessage, { type: 'systemTtsIntent' }>;
 type DiagnosticsIntent = Extract<ControlCenterBrowserMessage, { type: 'diagnosticsIntent' }>;
 
+/** The bounded host speech fallback seen by the Control Center; absent on most platforms. */
+export interface ControlCenterHostSpeech {
+  voices(): readonly ControlCenterObservedSystemVoice[];
+  speak(text: string, options: { language: 'he' | 'en'; rate: number }): boolean;
+  stop(): void;
+}
+
+/**
+ * The consent-gated Soniox voice path. Its roster is fetched lazily and detached, so this
+ * port answers an empty list until the gate opens and the request settles.
+ */
+export interface ControlCenterSonioxTts {
+  /** Bare provider voice ids; both sides expand them into the same voice records. */
+  voiceIds(): readonly string[];
+  state(): 'ready' | 'unavailable';
+  ensureVoices(): void;
+  speak(text: string, options: { language: 'he' | 'en'; rate: number }): boolean;
+  stop(): void;
+}
+
 export interface ControlCenterOperationsOptions {
   settings: Pick<SettingsRepository, 'read' | 'update'>;
+  hostSpeech?: ControlCenterHostSpeech;
+  sonioxTts?: ControlCenterSonioxTts;
   setupChoices: Pick<ControlCenterSetupChoices, 'snapshot' | 'recordTts'>;
   devices: Pick<AudioDeviceService, 'get' | 'selectionStatus' | 'cachedDevices'>;
   diagnostics: Pick<DiagnosticsService, 'collect' | 'open' | 'result'>;
@@ -47,6 +74,10 @@ export class ControlCenterOperations {
 
   setupState(): SetupState {
     const settings = this.options.settings.read().values;
+    // Visiting setup is what asks the provider for its roster; the request is detached.
+    if (!this.disposed) this.options.sonioxTts?.ensureVoices();
+    const hostVoices = this.options.hostSpeech?.voices() ?? [];
+    const sonioxVoices = this.sonioxVoiceIds();
     const stepStates: ControlCenterSetupStepStates = [
       microphoneStepState(this.microphoneState),
       'pending',
@@ -62,11 +93,13 @@ export class ControlCenterOperations {
       microphoneLabel: this.microphoneLabel || this.selectedMicrophoneLabel(),
       systemTtsEnabled: settings.assistantSpeechEnabled,
       systemTtsVoiceIndex: settings.assistantSpeechVoiceUri
-        ? this.observedVoices.findIndex(({ voiceUri }) => voiceUri === settings.assistantSpeechVoiceUri)
+        ? this.effectiveVoices().findIndex(({ voiceUri }) => voiceUri === settings.assistantSpeechVoiceUri)
         : -1,
       systemTtsRate: settings.assistantSpeechRate,
       stepStates,
       recommendedStep: recommendedSetupStep(stepStates),
+      ...(hostVoices.length > 0 ? { hostVoices: hostVoices.map((voice) => ({ ...voice })) } : {}),
+      ...(sonioxVoices.length > 0 ? { sonioxVoices: [...sonioxVoices] } : {}),
     };
   }
 
@@ -87,10 +120,13 @@ export class ControlCenterOperations {
   systemTtsState(): 'off' | 'configured-unverified' | 'ready' | 'unavailable' {
     const settings = this.options.settings.read().values;
     if (!settings.assistantSpeechEnabled) return 'off';
-    if (!this.voicesObserved) return 'configured-unverified';
-    if (this.observedVoices.length === 0) return 'unavailable';
+    // A probed host fallback is itself an observation: the browser can report an empty
+    // list forever on runtimes whose speechSynthesis exposes no voices.
+    const voices = this.effectiveVoices();
+    if (!this.voicesObserved && this.hostVoices().length === 0) return 'configured-unverified';
+    if (voices.length === 0) return 'unavailable';
     if (settings.assistantSpeechVoiceUri
-      && !this.observedVoices.some(({ voiceUri }) => voiceUri === settings.assistantSpeechVoiceUri)) {
+      && !voices.some(({ voiceUri }) => voiceUri === settings.assistantSpeechVoiceUri)) {
       return 'unavailable';
     }
     return 'ready';
@@ -123,6 +159,17 @@ export class ControlCenterOperations {
   }
 
   async systemTts(message: SystemTtsIntent): Promise<void> {
+    // Playback operations mutate no host state, so they neither publish nor await a child.
+    if (message.operation === 'preview') {
+      this.previewHostSpeech();
+      return;
+    }
+    if (message.operation === 'preview-stop') {
+      // Stopping is unconditional on every host path, whichever one is speaking.
+      this.options.sonioxTts?.stop();
+      this.options.hostSpeech?.stop();
+      return;
+    }
     if (message.operation === 'set-enabled') {
       await this.options.settings.update({ assistantSpeechEnabled: message.enabled });
       await this.options.setupChoices.recordTts(message.enabled ? 'system' : 'off');
@@ -131,7 +178,7 @@ export class ControlCenterOperations {
     } else {
       const voiceUri = message.voiceIndex === -1
         ? ''
-        : this.observedVoices[message.voiceIndex]?.voiceUri;
+        : this.effectiveVoices()[message.voiceIndex]?.voiceUri;
       if (voiceUri === undefined) return;
       await this.options.settings.update({ assistantSpeechVoiceUri: voiceUri });
     }
@@ -163,6 +210,49 @@ export class ControlCenterOperations {
     this.stopMicrophoneTest('untested');
     this.observedVoices = [];
     this.voicesObserved = false;
+  }
+
+  /**
+   * The host-owned channel: the probed speech-dispatcher fallback first, then the gated
+   * Soniox roster. Both are absent until their own gate opens. The browser expands the
+   * same ids in the same order, so one index always means one voice on both sides.
+   */
+  private hostVoices(): readonly ControlCenterObservedSystemVoice[] {
+    if (this.disposed) return [];
+    return [
+      ...this.options.hostSpeech?.voices() ?? [],
+      ...sonioxSystemVoices(
+        this.sonioxVoiceIds(),
+        this.options.settings.read().values.uiLanguage,
+      ),
+    ];
+  }
+
+  private sonioxVoiceIds(): readonly string[] {
+    return this.disposed ? [] : this.options.sonioxTts?.voiceIds() ?? [];
+  }
+
+  /** The single list the browser renders and every voice index refers to. */
+  private effectiveVoices(): ControlCenterObservedSystemVoice[] {
+    return mergeSystemVoices(this.observedVoices, this.hostVoices());
+  }
+
+  /** Host-composed preview text: the browser can neither author nor play this voice. */
+  private previewHostSpeech(): void {
+    if (this.hostVoices().length === 0) return;
+    const settings = this.options.settings.read().values;
+    const request = {
+      language: settings.uiLanguage === 'he' ? 'he' as const : 'en' as const,
+      rate: settings.assistantSpeechRate,
+    };
+    const text = this.options.localize(
+      'Voice Input system speech preview.',
+      'תצוגה מקדימה של דיבור המערכת עבור Voice Input.',
+    );
+    // The same host-composed sentence reaches whichever host path owns the selected voice.
+    if (isSonioxTtsVoice(settings.assistantSpeechVoiceUri)
+      && this.options.sonioxTts?.speak(text, request)) return;
+    this.options.hostSpeech?.speak(text, request);
   }
 
   private async testMicrophoneSignal(): Promise<void> {

@@ -397,6 +397,43 @@ test('capability requires a later distinct confirmation and cannot replay', asyn
   });
 });
 
+test('a confirmation whose window lost focus to the modal still dispatches the same target', async () => {
+  const storage = new MemoryStorage();
+  const registry = new CustomMappingRegistry(storage, { idFactory: ids() });
+  registry.load();
+  const mapping = await registry.create(commandDraft(), catalog);
+  const policy = new MappingCapabilityPolicy();
+  const target = snapshot();
+
+  policy.request(mapping, 'request-1', target, 10_000);
+  const blurred = snapshot({ vscodeFocused: false, capturedAt: 20_000 });
+  assert.equal(
+    policy.confirm(registry.get.bind(registry), blurred, 'confirm-1', 10_001).allowed,
+    true,
+    'a native modal blurs the window it belongs to; identity is what binds the dispatch',
+  );
+
+  for (const changed of [
+    snapshot({ vscodeFocused: false, activeTabIdentity: 'tab-2' }),
+    snapshot({ vscodeFocused: false, activeEditorIdentity: 'editor-2' }),
+    snapshot({ vscodeFocused: false, resolvedTarget: 'terminal', activeTerminalIdentity: 'term-1' }),
+  ]) {
+    policy.request(mapping, `request-${changed.activeTabIdentity}-${changed.resolvedTarget}`, target, 20_000);
+    assert.deepEqual(
+      policy.confirm(registry.get.bind(registry), changed, `confirm-${changed.activeEditorIdentity}-${changed.resolvedTarget}`, 20_001),
+      { allowed: false, reason: 'target-changed' },
+      'target identity is still fully revalidated while blurred',
+    );
+  }
+
+  assert.throws(
+    () => policy.request(mapping, 'request-unfocused', snapshot({ vscodeFocused: false }), 30_000),
+    { code: 'invalid-payload' },
+    'the request path still refuses to arm a capability from an unfocused window',
+  );
+  assert.equal(policy.getPending(30_001), null);
+});
+
 test('capability is bound to fingerprint, rotated ID, target snapshot, and cancellation', async () => {
   const storage = new MemoryStorage();
   const registry = new CustomMappingRegistry(storage, { idFactory: ids() });

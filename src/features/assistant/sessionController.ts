@@ -9,19 +9,23 @@ import type {
   AssistantSessionControllerOptions, AssistantSessionStartOptions,
 } from './sessionContracts';
 export type {
-  AssistantSessionControllerOptions, AssistantSessionStartOptions,
-  AssistantSessionStatusPort, AssistantSessionUiPort,
+  AssistantResumeSuggestionChoice, AssistantSessionControllerOptions,
+  AssistantSessionStartOptions, AssistantSessionStatusPort, AssistantSessionUiPort,
 } from './sessionContracts';
+import { offerAssistantResumeOnStartup } from './resumeSuggestion';
 import {
   AssistantFinalTranscriptError,
   AssistantFinalTranscriptProcessor,
 } from './sessionTranscriptProcessor';
 import {
-  AssistantStreamingBuffer, handleSpeechUnavailable, monitorAssistantCapture,
-} from './sessionStreaming';
+  assistantSessionMessage, type AssistantSessionMessageKey,
+} from './sessionMessages';
+import { handleSpeechUnavailable, monitorAssistantCapture } from './sessionStreaming';
+import { AssistantStreamingCoordinator } from './sessionStreamingCoordinator';
 
 const CAPTURE_LIMIT_MS = 5 * 60 * 1_000;
 const CAPTURE_RENEW_MS = 4 * 60 * 1_000 + 15 * 1_000;
+const NEVER_ABORTED = new AbortController().signal;
 
 class UnsupportedAssistantSampleRateError extends Error {}
 
@@ -45,11 +49,14 @@ export class AssistantSessionController {
   private readonly credentialSubscription: { dispose(): void } | undefined;
   private readonly consentSubscription: { dispose(): void } | undefined;
   private readonly transcriptProcessor: AssistantFinalTranscriptProcessor;
-  private readonly streaming = new AssistantStreamingBuffer();
+  private readonly streaming: AssistantStreamingCoordinator;
+  private readonly now: NonNullable<AssistantSessionControllerOptions['now']>;
+  private resumeSuggested = false;
 
   constructor(private readonly options: AssistantSessionControllerOptions) {
     this.setTimer = options.setTimer ?? setTimeout;
     this.clearTimer = options.clearTimer ?? clearTimeout;
+    this.now = options.now ?? Date.now;
     this.transcriptProcessor = new AssistantFinalTranscriptProcessor({
       settings: options.settings,
       mappings: options.mappings,
@@ -57,6 +64,19 @@ export class AssistantSessionController {
       actions: options.actions,
       feedback: options.feedback,
       localize: (english, hebrew) => this.localize(english, hebrew),
+      now: () => this.now(),
+    });
+    this.streaming = new AssistantStreamingCoordinator({
+      providers: options.speechProviders,
+      sampleRateHz: ASSISTANT_SAMPLE_RATE,
+      languageHint: () => options.settings.read().values.languageHint,
+      isCurrent: (generation) => generation === this.generation && !options.isDeactivating(),
+      canSwap: () => !this.transcriptionActive && !(this.vad?.isSpeaking ?? false),
+      onTranscript: (event) => options.onTranscript?.(event),
+      onLost: () => this.fail(this.message('streaming-failed')),
+      setTimer: (callback, delayMs) => this.setTimer(callback, delayMs),
+      clearTimer: (timer) => this.clearTimer(timer),
+      now: () => this.now(),
     });
     this.credentialSubscription = options.credentials.onDidInvalidate?.(
       (event) => this.credentialInvalidated(event),
@@ -107,27 +127,14 @@ export class AssistantSessionController {
     }
 
     if (this.options.speechProviders) {
-      const result = await this.options.speechProviders.openStreaming({
-        sampleRateHz: ASSISTANT_SAMPLE_RATE,
-        channels: 1,
-        languageHint: this.options.settings.read().values.languageHint,
-        onTranscript: (event) => {
-          if (generation === this.generation) this.options.onTranscript?.(event);
-        },
-        onFailure: () => {
-          if (generation === this.generation) this.fail(this.localize(
-            'Voice Input assistant stopped because remote transcription failed safely.',
-            'Voice Input: העוזר הופסק בבטחה מפני שהתמלול המרוחק נכשל.',
-          ));
-        },
-      });
-      if (generation !== this.generation) {
-        if (result.status === 'ready') result.value.cancel();
+      const opened = await this.streaming.open(generation);
+      if (opened.status === 'stale' || generation !== this.generation) {
+        this.streaming.cancelIfCurrent(generation);
         return;
       }
-      if (result.status !== 'ready') {
+      if (opened.status === 'unavailable') {
         await handleSpeechUnavailable({
-          status: result.status,
+          status: opened.reason,
           allowPrompts,
           showMissingSonioxCredential: () => this.options.ui.showMissingSonioxCredential(),
           executeCommand: (commandId) => this.options.ui.executeCommand(commandId),
@@ -135,7 +142,6 @@ export class AssistantSessionController {
         });
         return;
       }
-      this.streaming.attach(result.value);
     } else {
       const sonioxConfigured = (await this.options.credentials.status('soniox')).configured;
       if (generation !== this.generation) return;
@@ -157,7 +163,10 @@ export class AssistantSessionController {
       // Native capture below remains the authoritative recorder error.
     }
     await this.options.recording.cancel();
-    if (generation !== this.generation) return;
+    if (generation !== this.generation) {
+      this.streaming.cancelIfCurrent(generation);
+      return;
+    }
 
     const vad = new VadSegmenter();
     const configuredDevice = this.options.settings.read().values.audioDevice;
@@ -170,7 +179,7 @@ export class AssistantSessionController {
       if (generation !== this.generation || this.options.isDeactivating()) {
         stream.cancel();
         await stream.stop().catch(() => {});
-        this.streaming.cancel();
+        this.streaming.cancelIfCurrent(generation);
         return;
       }
       if (stream.sampleRate !== ASSISTANT_SAMPLE_RATE) {
@@ -185,21 +194,14 @@ export class AssistantSessionController {
       this.transcriptionActive = false;
       this.setListening();
       this.scheduleRenewal(generation, vad, CAPTURE_RENEW_MS);
+      if (allowPrompts) void this.suggestStartupResume(generation);
     } catch (error) {
       if (generation === this.generation) {
         this.streaming.cancel();
         this.listeningActive = false;
-        this.options.status.stoppedWithError(
-          error instanceof UnsupportedAssistantSampleRateError
-            ? this.localize(
-              `Voice Input assistant requires ${ASSISTANT_SAMPLE_RATE} Hz audio.`,
-              `Voice Input: העוזר דורש שמע בקצב ${ASSISTANT_SAMPLE_RATE} הרץ.`,
-            )
-            : this.localize(
-              'Voice Input assistant could not start safely.',
-              'Voice Input: לא ניתן היה להפעיל את העוזר באופן בטוח.',
-            ),
-        );
+        this.options.status.stoppedWithError(this.message(
+          error instanceof UnsupportedAssistantSampleRateError ? 'sample-rate' : 'start-failed',
+        ));
         void this.options.publish();
       }
     }
@@ -218,6 +220,7 @@ export class AssistantSessionController {
     this.options.feedback.cancelSpeaking();
     this.clearRestartTimer();
     this.options.transcriptions.abort('assistant');
+    this.transcriptProcessor.disarmWake();
     this.streaming.cancel();
 
     const activeHandle = this.handle;
@@ -252,19 +255,28 @@ export class AssistantSessionController {
     this.queuedUtterance = null;
     this.transcriptionActive = false;
     this.options.transcriptions.abort('assistant');
+    this.transcriptProcessor.disarmWake();
     this.streaming.cancel();
     this.credentialSubscription?.dispose();
     this.consentSubscription?.dispose();
+  }
+
+  /** Offered once per host session, only after an explicit manual start succeeded. */
+  private async suggestStartupResume(generation: number): Promise<void> {
+    if (this.resumeSuggested) return;
+    this.resumeSuggested = true;
+    await offerAssistantResumeOnStartup({
+      settings: this.options.settings,
+      ui: this.options.ui,
+      isCurrent: () => generation === this.generation,
+    });
   }
 
   private credentialInvalidated(event: CredentialInvalidation): void {
     if (event.provider !== 'soniox') return;
     this.generation += 1;
     if (!this.listeningActive && !this.handle) return;
-    void this.stop(this.localize(
-      'Voice Input assistant stopped because the Soniox API key is no longer available.',
-      'Voice Input: העוזר הופסק מפני שמפתח ה-API של Soniox אינו זמין עוד.',
-    ));
+    void this.stop(this.message('credential-lost'));
   }
 
   private consentRevoked(event: ConsentInvalidation): void {
@@ -273,10 +285,7 @@ export class AssistantSessionController {
       void this.stop();
       return;
     }
-    void this.stop(this.localize(
-      'Voice Input assistant stopped because listening consent was revoked.',
-      'Voice Input: העוזר הופסק מפני שהסכמת ההאזנה בוטלה.',
-    ));
+    void this.stop(this.message('consent-revoked'));
   }
 
   private fail(message: string): void {
@@ -288,13 +297,8 @@ export class AssistantSessionController {
       stream,
       isCurrent: () => this.listeningActive && generation === this.generation
         && this.handle === stream,
-      fail: (kind) => this.fail(this.localize(
-        kind === 'error'
-          ? 'Voice Input assistant stopped because microphone capture failed safely.'
-          : 'Voice Input assistant stopped because microphone capture failed.',
-        kind === 'error'
-          ? 'Voice Input: ההאזנה של העוזר הופסקה בבטחה בגלל שגיאת מיקרופון.'
-          : 'Voice Input: ההאזנה של העוזר הופסקה בגלל שגיאת מיקרופון.',
+      fail: (kind) => this.fail(this.message(
+        kind === 'error' ? 'capture-error' : 'capture-limit',
       )),
     });
   }
@@ -310,10 +314,7 @@ export class AssistantSessionController {
       this.queuedUtterance = item;
       return;
     }
-    this.fail(this.localize(
-      'Voice Input assistant stopped: transcription queue overflow.',
-      'Voice Input: העוזר הופסק מפני שתור התמלול התמלא.',
-    ));
+    this.fail(this.message('queue-overflow'));
   }
 
   private handleFrame(frame: Int16Array, generation: number, vad: VadSegmenter): void {
@@ -322,27 +323,23 @@ export class AssistantSessionController {
       this.streaming.send(frame);
       const result = vad.pushFrame(frame);
       if (!result.accepted) {
-        this.fail(this.localize(
-          'Voice Input assistant stopped: audio processing could not keep up.',
-          'Voice Input: העוזר הופסק מפני שעיבוד השמע לא עמד בקצב.',
-        ));
+        this.fail(this.message('audio-backlog'));
         return;
       }
       if (result.signals.some((signal) => signal.type === 'utterance-queued')) {
+        // The queued utterance is always taken so capture never backpressures, but while a
+        // replacement session is opening its audio stays buffered for that session instead.
         const utterance = vad.takeUtterance();
-        if (utterance) {
+        if (utterance && !this.streaming.isRecovering) {
           this.enqueue({
-            ...(this.streaming.session ? {} : { audio: utterance.audio }),
+            ...(this.streaming.isStreaming ? {} : { audio: utterance.audio }),
             snapshot: this.options.target.capture(),
             id: this.options.sequence.next('utterance'),
           }, generation);
         }
       }
     } catch {
-      this.fail(this.localize(
-        'Voice Input assistant stopped because local audio processing failed safely.',
-        'Voice Input: העוזר הופסק בבטחה בגלל שגיאה בעיבוד השמע המקומי.',
-      ));
+      this.fail(this.message('audio-failed'));
     }
   }
 
@@ -351,10 +348,15 @@ export class AssistantSessionController {
     generation: number,
   ): Promise<void> {
     const streaming = this.streaming.session;
-    const operation = streaming ? undefined : this.options.transcriptions.open('assistant');
-    let signal = streaming?.signal ?? operation!.signal;
+    // A session lost between capture and transcription keeps its audio buffered for the
+    // replacement, so this utterance is dropped rather than ending the listening session.
+    const recovering = !streaming && this.streaming.isStreaming;
+    const operation = streaming || recovering
+      ? undefined
+      : this.options.transcriptions.open('assistant');
+    let signal = streaming?.signal ?? operation?.signal ?? NEVER_ABORTED;
     try {
-      if (!this.listeningActive || generation !== this.generation) return;
+      if (recovering || !this.listeningActive || generation !== this.generation) return;
       this.options.status.transcribing();
       let finalText: string;
       if (streaming) {
@@ -367,16 +369,13 @@ export class AssistantSessionController {
           mime: 'audio/wav',
         });
         if (transcription.status === 'missing-credential') {
-          this.fail(this.localize(
-            'Voice Input assistant stopped because the Soniox API key is no longer available.',
-            'Voice Input: העוזר הופסק מפני שמפתח ה־API של Soniox אינו זמין עוד.',
-          ));
+          this.fail(this.message('credential-lost'));
           return;
         }
         finalText = transcription.text;
       }
       if (!this.listeningActive || generation !== this.generation || !finalText) return;
-      signal = streaming?.signal ?? operation!.signal;
+      signal = streaming?.signal ?? operation?.signal ?? NEVER_ABORTED;
       await this.transcriptProcessor.process(
         finalText,
         item.snapshot,
@@ -386,17 +385,11 @@ export class AssistantSessionController {
         () => streaming?.markDispatched(),
       );
     } catch (error) {
-      if (!signal.aborted && this.listeningActive && generation === this.generation) {
+      if (!signal.aborted && !this.streaming.isRecovering
+        && this.listeningActive && generation === this.generation) {
         const planning = error instanceof AssistantFinalTranscriptError
           && error.phase === 'planning';
-        this.fail(this.localize(
-          planning
-            ? 'Voice Input assistant stopped because planning failed safely.'
-            : 'Voice Input assistant stopped because transcription failed safely.',
-          planning
-            ? 'Voice Input: העוזר הופסק בבטחה בגלל שגיאת תכנון.'
-            : 'Voice Input: העוזר הופסק בבטחה בגלל שגיאת תמלול.',
-        ));
+        this.fail(this.message(planning ? 'planning-failed' : 'transcription-failed'));
       }
     } finally {
       operation?.dispose();
@@ -441,10 +434,7 @@ export class AssistantSessionController {
       this.monitorCapture(next, generation);
       this.scheduleRenewal(generation, vad, CAPTURE_RENEW_MS);
     } catch {
-      this.fail(this.localize(
-        'Voice Input assistant stopped because microphone capture could not restart safely.',
-        'Voice Input: העוזר הופסק מפני שלא ניתן היה לחדש את קליטת המיקרופון בבטחה.',
-      ));
+      this.fail(this.message('capture-restart-failed'));
     }
   }
 
@@ -466,6 +456,10 @@ export class AssistantSessionController {
     this.listeningActive = true;
     this.options.status.listening();
     void this.options.publish();
+  }
+
+  private message(key: AssistantSessionMessageKey): string {
+    return assistantSessionMessage(key, (english, hebrew) => this.localize(english, hebrew));
   }
 
   private localize(english: string, hebrew: string): string {

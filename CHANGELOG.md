@@ -4,6 +4,31 @@ All notable changes to **Voice Input** are documented here. Format follows [Keep
 
 ## [Unreleased]
 
+## [2.2.0] — 2026-09-02
+
+### Fixed
+
+- The Control Center froze and then every click was rejected: long-running operations (microphone signal test, device picker, diagnostics, native confirmation dialogs, provider setup, credential prompts) ran inside the panel's serialized message queue, and the intent gate additionally required a completed acknowledgement round-trip. Long-running operations now run detached with an in-flight guard (a second click cannot stack dialogs), and an intent carrying the current revision is accepted without waiting for the acknowledgement.
+- The entire VS Code extension host could freeze ("extension host is unresponsive", the editor stops responding until a restart): the bundled native audio recorder's synchronous calls (device enumeration, device open/close) ran on the extension-host thread and could stall indefinitely on some audio stacks (notably Bluetooth headsets on Linux). All native recorder usage now runs in a dedicated worker thread with per-operation timeouts and automatic worker replacement, so a stalled audio stack can no longer freeze the editor.
+- Push-to-talk recordings could report zero captured samples due to a frame buffer ownership bug discovered while moving capture to the worker; fixed.
+- Setup step 1 (microphone and signal) now runs its test without freezing the panel and reports signal, no-signal, unavailable, or error states reliably.
+
+### Added
+
+- System voice output on Linux without browser voices: when VS Code's webview reports no operating-system voices, Voice Input now offers a host-side "System speech (speech-dispatcher)" voice backed by spd-say. Setup step 3 can complete, the voice appears in the Control Center dropdown with working preview and stop-preview, and assistant spoken feedback is delivered through speech-dispatcher when that voice is selected. On systems without speech-dispatcher nothing changes.
+
+## [2.1.1] — 2026-09-02
+
+### Fixed
+
+- Soniox remote-processing consent could not be granted in a real VS Code host. The consent authority relied on SecretStorage change events being delivered synchronously during the write, but the extension host delivers them asynchronously, causing every confirmation to fail and later self-write events to permanently close the authority. Self-writes are now recognized by stored value with read-back verification, and external mutations still fail closed via the receipt's cryptographic binding.
+- The consent prompt cancelled itself when the window lost focus, the active editor changed, or the selection changed, and the modal confirmation dialog itself triggers a window blur. Prompt completion no longer requires window focus; starting a prompt still does.
+- Enabling Auto Mode failed when the confirmation modal changed window focus, because focus was part of the enable request's target fingerprint. Focus is no longer part of the fingerprint; workspace trust, target, and panel binding remain.
+- Spurious authority invalidations no longer cancel live transcription sessions, preventing premature session closure when non-authority changes occur.
+- Built-in and custom voice action confirmations could never complete: the confirmation dialog's own window blur failed a post-dialog focus recheck, and the target binding hashed the capture timestamp so its before/after comparison never matched. Confirmations now bind target identity (editor, tab, terminal, requested target) with focus and capture time normalized; a focused window is still required to start a confirmation.
+- Auto Mode custom mappings never dispatched: the pre-dispatch "target still current" check also hashed the capture timestamp and therefore always reported the target as changed. The check now compares target identity and window focus only. Note for upgraders: this makes the Auto Mode dispatch path work for the first time — with Auto Mode enabled (explicit native confirmation receipt plus workspace trust), enabled voice mappings now genuinely run without a per-action Voice Input confirmation, exactly as the Auto Mode disclosure describes.
+- Revoking Soniox consent now removes the stored consent receipt before rotating the installation secret, so a secret-storage failure during revocation can no longer leave a readable receipt behind after reload; a failed revocation also keeps transcription authority closed for the rest of the session.
+
 ## [2.1.0] — 2026-09-02
 
 ### Added

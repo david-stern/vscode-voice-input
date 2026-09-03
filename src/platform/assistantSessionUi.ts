@@ -1,6 +1,9 @@
 import * as vscode from 'vscode';
 
-import type { AssistantSessionUiPort } from '../features/assistant/sessionController';
+import type {
+  AssistantResumeSuggestionChoice,
+  AssistantSessionUiPort,
+} from '../features/assistant/sessionController';
 import {
   ASSISTANT_LISTENING_DISCLOSURE,
   type NativeLocalize,
@@ -33,6 +36,25 @@ export class VsCodeAssistantSessionUi implements AssistantSessionUiPort {
       action,
     );
     return selected === action;
+  }
+
+  /**
+   * Non-modal discovery of background resume. It states the gates plainly and never
+   * starts listening, prompts for consent or touches credentials by itself.
+   */
+  async suggestStartupResume(): Promise<AssistantResumeSuggestionChoice> {
+    const enable = this.localize('Enable', 'הפעלה');
+    const notNow = this.localize('Not now', 'לא עכשיו');
+    const selected = await vscode.window.showInformationMessage(
+      this.localize(
+        'Voice Input: resume assistant listening automatically after startup? It resumes only when consent, the Soniox key, a microphone and workspace trust are already available.',
+        'Voice Input: לחדש את האזנת העוזר אוטומטית לאחר ההפעלה? החידוש מתבצע רק כאשר ההסכמה, מפתח Soniox, מיקרופון ואמון במרחב העבודה כבר קיימים.',
+      ),
+      enable,
+      notNow,
+    );
+    if (selected === enable) return 'enable';
+    return selected === notNow ? 'dismiss' : 'ignored';
   }
 
   showError(message: string): Thenable<string | undefined> {

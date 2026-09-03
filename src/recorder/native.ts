@@ -1,19 +1,18 @@
+import * as path from 'node:path';
+import { Worker } from 'node:worker_threads';
 import * as vscode from 'vscode';
+
 import {
-  startPcmCapture,
   PcmCaptureHandle,
-  PcmSource,
   ZeroSampleCaptureError,
 } from './capture';
 import {
   audioDevicesFromNames,
   AudioDevice,
-  fallbackIndexForLoopbackDefault,
   isLoopbackMonitorName,
-  NoUsableAudioInputError,
-  resolveAudioDeviceIndex,
 } from './devices';
 import { pcm16FramesToWav } from './wav';
+import { RecorderWorkerClient, type RecorderWorkerPort } from './workerClient';
 
 export type { AudioDevice } from './devices';
 
@@ -36,35 +35,24 @@ export interface PcmStreamHandle extends PcmCaptureHandle {
   readonly selectedDevice: string;
 }
 
-interface PvRecorderInstance extends PcmSource {
-  readonly frameLength: number;
-  getSelectedDevice(): string;
-}
-
-interface PvRecorderConstructor {
-  new(frameLength: number, deviceIndex?: number, bufferedFramesCount?: number): PvRecorderInstance;
-  getAvailableDevices(): string[];
-}
-
 const FRAME_LENGTH = 512;
 const BUFFERED_FRAMES = 100;
 const MAX_CAPTURE_MS = 5 * 60 * 1000;
+/** Bundled next to out/extension.js by esbuild.js. */
+const WORKER_FILE = 'recorderWorker.js';
 
-let recorderConstructor: PvRecorderConstructor | null = null;
+let client: RecorderWorkerClient | null = null;
 
-/** Delay native module loading until enumeration or capture is actually requested. */
-function loadPvRecorder(): PvRecorderConstructor {
-  if (recorderConstructor) return recorderConstructor;
-  try {
-    // The native addon must remain lazy: it is optional on unsupported systems
-    // and is bundled as an external platform-specific package.
-    // eslint-disable-next-line @typescript-eslint/no-require-imports
-    const module = require('./vendor/pvrecorder-node') as { PvRecorder: PvRecorderConstructor };
-    recorderConstructor = module.PvRecorder;
-    return recorderConstructor;
-  } catch (error) {
-    throw new Error("Voice Input's bundled audio recorder could not be loaded on this system.", { cause: error });
-  }
+/**
+ * Every PvRecorder call is synchronous native code, so it runs on a worker thread.
+ * A device that stalls for seconds then fails one RPC instead of freezing the
+ * whole extension host.
+ */
+function recorderClient(): RecorderWorkerClient {
+  client ??= new RecorderWorkerClient({
+    createWorker: (): RecorderWorkerPort => new Worker(path.join(__dirname, WORKER_FILE)),
+  });
+  return client;
 }
 
 function configuredDeviceId(): string {
@@ -77,7 +65,7 @@ function configuredDeviceId(): string {
 
 /** Enumerate native input devices without activating recording. */
 export async function listAudioDevices(): Promise<AudioDevice[]> {
-  const names = loadPvRecorder().getAvailableDevices();
+  const names = await recorderClient().enumerate();
   const visibleNames = process.platform === 'linux'
     ? names.filter((name) => !isLoopbackMonitorName(name))
     : names;
@@ -90,58 +78,14 @@ export async function startPcmStream(options: PcmStreamOptions): Promise<PcmStre
   if (!Number.isFinite(requestedDuration) || requestedDuration <= 0) {
     throw new Error(`Invalid capture duration: ${requestedDuration}`);
   }
-  const maxDurationMs = Math.min(requestedDuration, MAX_CAPTURE_MS);
 
-  const PvRecorder = loadPvRecorder();
-  const availableDevices = PvRecorder.getAvailableDevices();
-  const deviceId = options.deviceId?.trim() ?? '';
-  const deviceIndex = deviceId
-    ? resolveAudioDeviceIndex(deviceId, availableDevices)
-    : -1;
-
-  let recorder: PvRecorderInstance | undefined = new PvRecorder(
-    FRAME_LENGTH,
-    deviceIndex,
-    BUFFERED_FRAMES,
-  );
-  let selectedDevice: string;
-  let capture: PcmCaptureHandle;
-  try {
-    selectedDevice = recorder.getSelectedDevice();
-    if (!deviceId) {
-      const fallbackIndex = fallbackIndexForLoopbackDefault(
-        availableDevices,
-        selectedDevice,
-        process.platform,
-      );
-      if (fallbackIndex !== undefined) {
-        recorder.release();
-        recorder = undefined;
-        recorder = new PvRecorder(FRAME_LENGTH, fallbackIndex, BUFFERED_FRAMES);
-        selectedDevice = recorder.getSelectedDevice();
-        if (process.platform === 'linux' && isLoopbackMonitorName(selectedDevice)) {
-          throw new NoUsableAudioInputError();
-        }
-      }
-    }
-    capture = startPcmCapture(recorder, {
-      maxSamples: Math.max(1, Math.floor(recorder.sampleRate * maxDurationMs / 1000)),
-      maxDurationMs,
-      onFrame: options.onFrame,
-    });
-  } catch (error) {
-    try { recorder?.release(); } catch { /* preserve the start error */ }
-    throw error;
-  }
-
-  return {
-    sampleRate: capture.sampleRate,
-    get samplesCaptured() { return capture.samplesCaptured; },
-    selectedDevice,
-    outcome: capture.outcome,
-    stop: () => capture.stop(),
-    cancel: () => capture.cancel(),
-  };
+  return recorderClient().start({
+    deviceId: options.deviceId?.trim() ?? '',
+    frameLength: FRAME_LENGTH,
+    bufferedFrames: BUFFERED_FRAMES,
+    maxDurationMs: Math.min(requestedDuration, MAX_CAPTURE_MS),
+    onFrame: options.onFrame,
+  });
 }
 
 /** Capture into memory and return a correct mono PCM16 WAV. */

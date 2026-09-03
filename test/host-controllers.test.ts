@@ -896,6 +896,44 @@ test('metadata refresh prevents an older provider completion from overwriting ne
   assert.deepEqual(publications.at(-1), ['new-model']);
 });
 
+test('a failing docs scrape cannot hide models, and failing models cannot drop languages', async (context) => {
+  const originalFetch = globalThis.fetch;
+  context.after(() => { globalThis.fetch = originalFetch; });
+  let modelsFail = false;
+  globalThis.fetch = async (input) => {
+    const url = String(input);
+    // The public docs page is outside our control and is the historical failure.
+    if (!url.endsWith('/models')) throw new Error('docs page unreachable');
+    if (modelsFail) return new Response('', { status: 503 });
+    return modelsResponse('stt-async-v5');
+  };
+  const logs: string[] = [];
+  const metadata = new TranscriptionMetadataService(
+    {
+      status: async () => ({ provider: 'soniox', configured: true }),
+      use: async (_provider, operation) => operation('private-key'),
+    } as never,
+    { postMeta: () => {} },
+    (message) => { logs.push(message); },
+  );
+
+  await metadata.refresh();
+  assert.deepEqual(metadata.state.models.map((model) => model.id), ['stt-async-v5']);
+  assert.equal(metadata.state.error, undefined, 'a docs failure is not a model failure');
+  assert.equal(metadata.state.languages.length > 30, true, 'the packaged language list is retained');
+  assert.equal(logs.includes('models fetched: 1'), true);
+
+  modelsFail = true;
+  await metadata.refresh();
+  assert.equal(metadata.state.error, 'models: unavailable');
+  assert.equal(metadata.state.languages.length > 30, true);
+  assert.equal(
+    logs.join('|').includes('private-key'),
+    false,
+    'neither failure path can log the credential',
+  );
+});
+
 function deferred<T>(): { promise: Promise<T>; resolve(value: T): void } {
   let resolve!: (value: T) => void;
   const promise = new Promise<T>((complete) => { resolve = complete; });
